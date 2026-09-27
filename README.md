@@ -22,20 +22,21 @@ node server/server.mjs     # hoặc: npm start
 vào `f-droid.org` trên tablet → cài F-Droid → trong F-Droid cài **Termux** + **Termux:Boot**
 (mở Termux:Boot 1 lần sau khi cài). Vào *Settings → Apps → Termux → Battery → Unrestricted*.
 
-**2. Đưa code lên + chạy:**
+**2. Cài bằng 1 lệnh (không cần git/token):**
+
+Nén thư mục project → gửi tablet qua USB/Zalo → giải nén vào `Download` →
+mở Termux gõ:
 
 ```bash
-pkg update -y && pkg install -y nodejs git
-# Repo PRIVATE — cần GitHub Personal Access Token (Settings → Developer settings
-# → Tokens → Generate, scope "repo"), dùng token làm password khi git hỏi:
-git clone https://github.com/ecomplus2024/pos_fnb.git
-cd pos_fnb
-bash setup-termux.sh      # autostart khi boot + cloudflared (tuỳ chọn)
-node server/server.mjs    # → http://localhost:8787
+termux-setup-storage                    # hiện popup → Allow
+bash /sdcard/Download/pos_fnb/install.sh
 ```
 
-Không có git/internet: `termux-setup-storage` rồi `cp -r /sdcard/.../pos-cloudflare ~/`
-(phải copy vào `$HOME`, không chạy từ `/sdcard`).
+Script tự làm hết: copy code về `$HOME/pos_fnb` → cài Node.js → cài autostart
+khi boot → tạo icon *Start-POS* cho Termux:Widget → chạy server ngay.
+
+(Hoặc qua git: `git clone https://github.com/ecomplus2024/pos_fnb.git` —
+repo private cần token — rồi `bash pos_fnb/install.sh`.)
 
 **3. Cố định IP tablet** — `ip addr show wlan0 | grep inet` → DHCP reservation trên router.
 
