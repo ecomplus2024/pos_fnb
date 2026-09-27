@@ -17,6 +17,7 @@ Thumbs.db
 # Local dev helpers & large binaries
 tailwindcss-v3.exe
 tailwindcss-v3
+data/
 .claude/
 replace_icons.py
 check_missing_css.py

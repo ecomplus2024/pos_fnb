@@ -2,6 +2,57 @@
 
 Demo POS chạy hoàn toàn trên Cloudflare: **Worker (API) + Assets (React frontend) + D1 (database)**, một lần deploy duy nhất.
 
+## Chạy local (không cần Cloudflare) — `server/`
+
+`server/server.mjs` chạy **nguyên logic `src/worker.ts`** trên Node.js: D1 được shim bằng `node:sqlite` (built-in, zero dependency), `env.ASSETS` serve `public/`, `caches.default` là Map in-memory.
+
+```bash
+node server/server.mjs     # hoặc: npm start
+# → http://localhost:8787  (mở LAN: http://<ip>:8787)
+```
+
+- DB SQLite lưu tại `data/pos.db`, tự init từ `schema.sql` + migration bù drift (cột `orders.*`, `order_item_toppings.quantity`, bảng `order_item_change_logs`) lần chạy đầu.
+- User mặc định: `admin` / `admin123` (đổi bằng env `ADMIN_PASSWORD` trước lần chạy đầu, hoặc đổi trong Admin panel).
+- Yêu cầu Node >= 22.5 (`node:sqlite`; bản <22.13 tự respawn với `--experimental-sqlite`).
+- Env: `PORT`, `HOST`, `POS_DATA_DIR`, `STORE_NAME`, `ADMIN_PASSWORD`.
+
+### Trên Android (Termux) — tablet làm server trong quán
+
+**1. Cài Termux** — bản Play Store đã bỏ hoang, cài qua F-Droid:
+vào `f-droid.org` trên tablet → cài F-Droid → trong F-Droid cài **Termux** + **Termux:Boot**
+(mở Termux:Boot 1 lần sau khi cài). Vào *Settings → Apps → Termux → Battery → Unrestricted*.
+
+**2. Đưa code lên + chạy:**
+
+```bash
+pkg update -y && pkg install -y nodejs git
+git clone https://github.com/ecomplus2024/pos-cloudflare.git
+cd pos-cloudflare
+bash setup-termux.sh      # autostart khi boot + cloudflared (tuỳ chọn)
+node server/server.mjs    # → http://localhost:8787
+```
+
+Không có git/internet: `termux-setup-storage` rồi `cp -r /sdcard/.../pos-cloudflare ~/`
+(phải copy vào `$HOME`, không chạy từ `/sdcard`).
+
+**3. Cố định IP tablet** — `ip addr show wlan0 | grep inet` → DHCP reservation trên router.
+
+**4. Thiết bị khác** mở `http://<IP-tablet>:8787` → *Add to Home Screen* (PWA, giống APK):
+`/` = thu ngân (admin/admin123), `/kitchen` = bếp, `/counter` = quầy, `/menu/:id` = QR bàn.
+Shipper/khách ngoài LAN: `pkg install cloudflared` → tunnel (xem `setup-termux.sh`).
+
+**5. Vận hành:** tablet cắm sạc 24/7; backup = copy `data/pos.db`; log tại `~/pos.log`.
+
+### Import data từ D1 production (nếu muốn mang data cũ về local)
+
+```bash
+npx wrangler d1 export pos-free --remote --output=dump.sql
+# trên máy local:
+node -e "const{DatabaseSync}=require('node:sqlite');const fs=require('fs');const db=new DatabaseSync('data/pos.db');db.exec(fs.readFileSync('dump.sql','utf8'))" --experimental-sqlite
+```
+
+---
+
 ## Cấu trúc
 
 ```

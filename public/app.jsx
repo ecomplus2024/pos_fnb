@@ -878,10 +878,13 @@ async function fetchMergedOrders() {
     authFetch("/api/takeaway?status=pending").catch(() => []),
   ]);
   const dinein = (dineinData.orders || []).map((o) => ({ ...o, _kind: "dinein" }));
+  // /api/orders đã trả cả takeaway/ship → dedupe theo id, giữ bản takeaway (chi tiết hơn)
   const takeawayOrShip = (Array.isArray(takeawayData) ? takeawayData : []).map((o) => ({
     ...o, _kind: o.order_type === "ship" ? "ship" : "takeaway",
   }));
-  return [...dinein, ...takeawayOrShip].sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
+  const byId = new Map();
+  for (const o of [...dinein, ...takeawayOrShip]) byId.set(o.id, o);
+  return [...byId.values()].sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
 }
 
 async function fetchStaffCallsData() {
@@ -1028,7 +1031,10 @@ function useSyncPolling() {
     // Immediate first poll, then every 5s (tránh race với D1 eventual consistency)
     poll();
     const interval = setInterval(poll, 5000);
-    return () => { cancelled = true; clearInterval(interval); };
+    // SSE push (local Node server): mutation nào cũng trigger poll ngay — EventSource tự reconnect
+    const es = new EventSource("/api/events");
+    es.onmessage = () => poll();
+    return () => { cancelled = true; clearInterval(interval); es.close(); };
   }, []);
 
   // Imperative refresh helpers (for mutation handlers)
@@ -3741,10 +3747,8 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
   // Theo dõi optimistic status: itemId → {status, qty} — ngăn poll ghi đè
   const pendingStatusRef = useRef(new Map());
   const mutationCounter = useRef(0);
-  // Stale period: ngăn poll fetchOrders trong 3s sau mutation
+  // Stale period ngắn: local server commit trước khi trả response — chỉ cần phủ request đang bay
   const staleUntilRef = useRef(0);
-  // Phase 4b: trạng thái kitchen từ IndexedDB (local wins)
-  const persistedKitchenStatusRef = useRef(new Map());
   // Phase 5a: online status
   const isOnline = useOnlineStatus();
 
@@ -3764,33 +3768,20 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
     localStorage.setItem('pos_last_midnight', today);
   }, []);
 
-  // Derived: merge server data with local IndexedDB (local wins) and pending in-flight
+  // Derived: merge server data với pending in-flight mutations (optimistic UI).
+  // Server là single source of truth — chạy local nên không cần lớp IndexedDB
+  // "local wins" (lớp đó từng gây item hồi sinh/hiển thị sai cột khi đồng bộ).
   const orders = useMemo(() => {
     const source = isEmbedded ? contextOrders : localOrders;
     if (!source) return [];
     const pending = pendingStatusRef.current;
-    const persisted = persistedKitchenStatusRef.current;
     return source.map((order) => ({
       ...order,
       items: order.items.map((it) => {
-        // Priority: pendingStatusRef (in-flight) > persisted IndexedDB (local) > server
         const p = pending.get(it.id);
-        if (p) {
-          if (p.deleted) return null;
-          return { ...it, status: p.status ?? it.status, quantity: p.qty ?? it.quantity };
-        }
-        const local = persisted.get(it.id);
-        if (local) {
-          if (local.status === 'deleted') return null;
-          if (local.status === 'reduced') {
-            return { ...it, quantity: local.quantity ?? it.quantity };
-          }
-          // Local luôn thắng nếu local status khác server (kitchen staff là authority)
-          if (local.status && local.status !== it.status) {
-            return { ...it, status: local.status };
-          }
-        }
-        return it;
+        if (!p) return it;
+        if (p.deleted) return null;
+        return { ...it, status: p.status ?? it.status, quantity: p.qty ?? it.quantity };
       }).filter(Boolean),
     }));
   }, [contextOrders, localOrders, isEmbedded, mutationCounter.current]);
@@ -3804,18 +3795,6 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
   useEffect(() => {
     if (isEmbedded && contextOrders && loading) setLoading(false);
   }, [isEmbedded, contextOrders, loading]);
-
-  // Phase 4b: load persisted IndexedDB status on mount
-  useEffect(() => {
-    const loadPersisted = async () => {
-      const all = await getAllKitchenStatus();
-      const map = new Map();
-      for (const rec of all) map.set(rec.itemId, rec);
-      persistedKitchenStatusRef.current = map;
-      mutationCounter.current++;
-    };
-    loadPersisted();
-  }, []);
 
   const isKitchen = unit === "kitchen";
   const token = localStorage.getItem(TOKEN_KEY);
@@ -3835,9 +3814,6 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
     }
     return resp;
   }, [token, onLogout]);
-
-  // Phase 5a: kitchen sync — auto-sync when coming online (after authFetch defined)
-  const kitchenSync = useKitchenSync(isOnline, authFetch, () => mutationCounter.current++);
 
   const playAlertSound = useCallback(() => {
     if (!soundEnabled) return;
@@ -3957,26 +3933,26 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
     };
     poll();
     const interval = setInterval(poll, KITCHEN_POLL_INTERVAL_MS);
-    return () => clearInterval(interval);
+    // SSE push (local server): mutation → fetch ngay, không chờ nhịp poll
+    const es = new EventSource("/api/events");
+    es.onmessage = () => {
+      if (Date.now() < staleUntilRef.current) return;
+      if (pendingStatusRef.current.size > 0) return;
+      fetchOrders();
+    };
+    return () => { clearInterval(interval); es.close(); };
   }, [fetchOrders, authFetch, unit, isEmbedded]);
 
   const updateItemStatus = async (itemId, status) => {
     const key = `${itemId}:status`;
     if (itemActionLoading[key]) return;
     setItemActionLoading((prev) => ({ ...prev, [key]: true }));
-    // Phase 4a: ghi IndexedDB TRƯỚC khi gọi API (synced=false)
     const now = Date.now();
-    await saveKitchenItemStatus(itemId, status, now);
-    if (status === 'completed') {
-      // Lưu completed item để đối chuyến
-      const item = (isEmbedded ? contextOrders : localOrders)
-        ?.flatMap((o) => o.items).find((it) => it.id === itemId);
-      if (item) await saveCompletedItem(item.order_id, itemId, item.product_name, now);
-    }
+    // Optimistic: pending chỉ sống trong lúc request bay — server là truth
     pendingStatusRef.current.set(itemId, { status });
     mutationCounter.current++;
-    staleUntilRef.current = now + 5000;
-    syncStaleUntilRef.current = now + 5000;
+    staleUntilRef.current = now + 800;
+    syncStaleUntilRef.current = now + 800;
     if (!isEmbedded) {
       setLocalOrders((prev) =>
         prev.map((order) => ({
@@ -3990,13 +3966,15 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
         method: "PUT",
         body: JSON.stringify({ status }),
       });
-      // Đánh dấu đã sync
-      await markKitchenItemsSynced([itemId]);
     } catch (err) {
       console.error("Status update error:", err);
-      // Phase 4a: KHÔNG rollback — giữ optimistic update + IndexedDB record
+      // Lỗi → bỏ optimistic, refetch về đúng trạng thái server
+      if (!isEmbedded) fetchOrders();
+    } finally {
+      pendingStatusRef.current.delete(itemId);
+      mutationCounter.current++;
+      setItemActionLoading((prev) => ({ ...prev, [key]: false }));
     }
-    setItemActionLoading((prev) => ({ ...prev, [key]: false }));
   };
 
   const reduceItemQuantity = async (item) => {
@@ -4006,16 +3984,10 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
     const newQty = item.quantity - 1;
     const now = Date.now();
     setItemActionLoading((prev) => ({ ...prev, [key]: true }));
-    // Phase 4a: ghi IndexedDB TRƯỚC khi gọi API
-    await saveKitchenItemStatus(item.id, newQty <= 0 ? 'deleted' : 'reduced', now);
-    if (newQty <= 0) {
-      pendingStatusRef.current.set(item.id, { deleted: true });
-    } else {
-      pendingStatusRef.current.set(item.id, { qty: newQty });
-    }
+    pendingStatusRef.current.set(item.id, newQty <= 0 ? { deleted: true } : { qty: newQty });
     mutationCounter.current++;
-    staleUntilRef.current = now + 5000;
-    syncStaleUntilRef.current = now + 5000;
+    staleUntilRef.current = now + 800;
+    syncStaleUntilRef.current = now + 800;
     if (!isEmbedded) {
       setLocalOrders((prev) =>
         prev.map((order) => ({
@@ -4035,12 +4007,14 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
           body: JSON.stringify({ quantity: newQty }),
         });
       }
-      await markKitchenItemsSynced([item.id]);
     } catch (err) {
       console.error("Reduce error:", err);
-      // Phase 4a: KHÔNG rollback — giữ optimistic update
+      if (!isEmbedded) fetchOrders();
+    } finally {
+      pendingStatusRef.current.delete(item.id);
+      mutationCounter.current++;
+      setItemActionLoading((prev) => ({ ...prev, [key]: false }));
     }
-    setItemActionLoading((prev) => ({ ...prev, [key]: false }));
   };
 
   const cancelItem = async (item) => {
@@ -4049,12 +4023,10 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
     if (itemActionLoading[key]) return;
     const now = Date.now();
     setItemActionLoading((prev) => ({ ...prev, [key]: true }));
-    // Phase 4a: ghi IndexedDB TRƯỚC khi gọi API
-    await saveKitchenItemStatus(item.id, 'deleted', now);
     pendingStatusRef.current.set(item.id, { deleted: true });
     mutationCounter.current++;
-    staleUntilRef.current = now + 5000;
-    syncStaleUntilRef.current = now + 5000;
+    staleUntilRef.current = now + 800;
+    syncStaleUntilRef.current = now + 800;
     if (!isEmbedded) {
       setLocalOrders((prev) =>
         prev.map((order) => ({
@@ -4065,12 +4037,14 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
     }
     try {
       await authFetch(`/api/orders/${item.order_id}/items/${item.id}`, { method: "DELETE" });
-      await markKitchenItemsSynced([item.id]);
     } catch (err) {
       console.error("Cancel error:", err);
-      // Phase 4a: KHÔNG rollback — giữ optimistic update
+      if (!isEmbedded) fetchOrders();
+    } finally {
+      pendingStatusRef.current.delete(item.id);
+      mutationCounter.current++;
+      setItemActionLoading((prev) => ({ ...prev, [key]: false }));
     }
-    setItemActionLoading((prev) => ({ ...prev, [key]: false }));
   };
 
   // I5 fix: Persist dismissed cancellations with TTL via localStorage
@@ -4200,12 +4174,6 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
           </span>
           {!isOnline && (
             <span className="ml-1 px-1.5 py-0.5 rounded text-[10px] font-black bg-yellow-600 text-yellow-100">OFFLINE</span>
-          )}
-          {kitchenSync.pendingCount > 0 && (
-            <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-yellow-600/20 text-yellow-400 text-xs font-bold animate-pulse">
-              <Icon name="refresh-cw" className="w-3 h-3" />
-              {kitchenSync.pendingCount} chờ đồng bộ
-            </span>
           )}
         </div>
         <div className="flex items-center gap-2">

@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
+    "start": "node server/server.mjs",
     "deploy": "wrangler deploy",
     "db:create": "wrangler d1 create pos-demo-db",
     "db:init": "wrangler d1 execute pos-demo-db --file=./schema.sql --remote",

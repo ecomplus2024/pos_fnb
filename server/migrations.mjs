@@ -1,0 +1,87 @@
+/**
+ * Khởi tạo + migrate database local.
+ *
+ * schema.sql trong repo LỖI THỜI so với DB production trên D1 — worker.ts
+ * đang dùng các cột/bảng chưa có trong schema. migrate() bù phần drift đó
+ * (idempotent — chạy mọi lần boot an toàn).
+ */
+import fs from "node:fs";
+import crypto from "node:crypto";
+
+const ORDER_COLUMNS = [
+  ["display_code", "display_code TEXT"],
+  ["client_id", "client_id TEXT"],
+  ["customer_phone", "customer_phone TEXT"],
+  ["ship_address", "ship_address TEXT"],
+  ["latitude", "latitude REAL"],
+  ["longitude", "longitude REAL"],
+  ["ship_notes", "ship_notes TEXT"],
+  ["payment_status", "payment_status TEXT"],
+];
+
+export async function initDb(db, { schemaPath }) {
+  const row = await db
+    .prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+    .first();
+  if (!row || row.n === 0) {
+    db.exec(fs.readFileSync(schemaPath, "utf8"));
+    console.log("[db] Initialized from schema.sql");
+  }
+  await migrate(db);
+  await seedAdmin(db);
+}
+
+async function columnNames(db, table) {
+  const { results } = await db.prepare(`PRAGMA table_info(${table})`).all();
+  return results.map((c) => c.name);
+}
+
+async function migrate(db) {
+  // Bảng log hủy/sửa món cho màn hình bếp — schema.sql thiếu
+  db.exec(`CREATE TABLE IF NOT EXISTS order_item_change_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER,
+    order_item_id INTEGER,
+    product_name TEXT,
+    table_name TEXT,
+    action TEXT,
+    old_quantity INTEGER,
+    new_quantity INTEGER,
+    production_unit TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_change_logs_unit
+    ON order_item_change_logs(production_unit, created_at)`);
+
+  // orders thiếu nhiều cột (ship/takeaway/display_code...)
+  const orderCols = await columnNames(db, "orders");
+  for (const [name, def] of ORDER_COLUMNS) {
+    if (!orderCols.includes(name)) {
+      db.exec(`ALTER TABLE orders ADD COLUMN ${def}`);
+      console.log(`[db] +orders.${name}`);
+    }
+  }
+
+  // order_item_toppings thiếu quantity (worker insert kèm quantity)
+  const toppingCols = await columnNames(db, "order_item_toppings");
+  if (!toppingCols.includes("quantity")) {
+    db.exec("ALTER TABLE order_item_toppings ADD COLUMN quantity INTEGER NOT NULL DEFAULT 1");
+    console.log("[db] +order_item_toppings.quantity");
+  }
+}
+
+/** Tạo user admin mặc định nếu chưa có user nào */
+async function seedAdmin(db) {
+  const row = await db.prepare("SELECT COUNT(*) AS n FROM users").first();
+  if (row && row.n > 0) return;
+  const password = process.env.ADMIN_PASSWORD || "admin123";
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto.createHash("sha256").update(salt + password).digest("hex");
+  await db
+    .prepare(
+      "INSERT INTO users (username, password_hash, salt, full_name, role) VALUES (?, ?, ?, ?, ?)"
+    )
+    .bind("admin", hash, salt, "Quản trị", "admin")
+    .run();
+  console.log(`[db] Seeded user "admin" / password "${password}" — đổi ngay sau khi đăng nhập`);
+}
