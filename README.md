@@ -45,6 +45,27 @@ Shipper/khách ngoài LAN: `pkg install cloudflared` → tunnel (xem `setup-term
 
 **5. Vận hành:** tablet cắm sạc 24/7; backup = copy `data/pos.db`; log tại `~/pos.log`.
 
+**6. Update & restart từ xa** — trang *Quản trị → Cài đặt → Hệ thống server*:
+
+- **Kiểm tra bản mới**: `git fetch` → báo số commit chưa pull
+- **Cập nhật & khởi động lại**: `git pull --ff-only` → process exit → supervisor loop
+  trong boot script bật lại với code mới (gián đoạn ~2s, UI tự reload khi server lên)
+- **Khởi động lại**: chỉ restart, không pull
+
+API (yêu cầu Bearer token của user `role=admin`):
+
+```
+GET  /api/admin/server-info      # commit/branch đang chạy
+POST /api/admin/server-check     # fetch + số commit phía sau
+POST /api/admin/server-update    # pull + restart
+POST /api/admin/server-restart   # chỉ restart
+```
+
+⚠️ Repo private → tablet phải lưu credential để `git pull` không hỏi password:
+clone bằng `https://<TOKEN>@github.com/ecomplus2024/pos_fnb.git`, hoặc
+`git config credential.helper store` rồi pull thủ công 1 lần.
+Không chạy qua supervisor loop thì `update` sẽ tắt server vĩnh viễn — phải start lại tay.
+
 ### Import data từ D1 production (nếu muốn mang data cũ về local)
 
 ```bash
