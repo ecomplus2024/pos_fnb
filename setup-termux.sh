@@ -31,7 +31,12 @@ cat > "$HOME/.termux/boot/start-pos.sh" <<EOF
 #!/data/data/com.termux/files/usr/bin/bash
 termux-wake-lock
 cd "$PROJECT_DIR"
-node server/server.mjs >> "\$HOME/pos.log" 2>&1 &
+# Supervisor loop: server exit (update/restart/crash) → tự bật lại ngay
+while true; do
+  node server/server.mjs >> "\$HOME/pos.log" 2>&1
+  echo "[supervisor] exited \$(date), restarting in 1s" >> "\$HOME/pos.log"
+  sleep 1
+done &
 EOF
 chmod +x "$HOME/.termux/boot/start-pos.sh"
 echo "==> Đã cài autostart: ~/.termux/boot/start-pos.sh"

@@ -6500,6 +6500,10 @@ function AdminPanel({ embedded = false, onExit }) {
   const [zaloBotDirty, setZaloBotDirty] = useState(false);
   const [zaloTestResult, setZaloTestResult] = useState(null);
   const [zaloTesting, setZaloTesting] = useState(false);
+  // ---- Server update state (local Node server — không áp dụng khi chạy Workers)
+  const [serverInfo, setServerInfo] = useState(null);
+  const [updateState, setUpdateState] = useState("idle"); // idle | checking | updating | restarting
+  const [updateMsg, setUpdateMsg] = useState(null); // { text, error, behind }
 
   useEffect(() => { fetchData(); }, [tab]);
 
@@ -6547,10 +6551,70 @@ function AdminPanel({ embedded = false, onExit }) {
         }
         setZaloBotDirty(false);
         setZaloTestResult(null);
+        apiAuth("/api/admin/server-info").then(setServerInfo).catch(() => setServerInfo(null));
       }
     } catch (err) {
       showToast("Lỗi tải dữ liệu: " + err.message);
     }
+  };
+
+  // ---- Server update / restart (local Node server) ----
+  // Sau update/restart, process exit → supervisor loop bật lại.
+  // Poll /api/health tới khi sống lại rồi reload trang.
+  const pollUntilRestart = () => {
+    setUpdateState("restarting");
+    setUpdateMsg({ text: "Server đang khởi động lại, chờ vài giây..." });
+    const t0 = Date.now();
+    const iv = setInterval(async () => {
+      try {
+        const r = await fetch("/api/health");
+        if (r.ok) {
+          clearInterval(iv);
+          window.location.reload();
+          return;
+        }
+      } catch {}
+      if (Date.now() - t0 > 90000) {
+        clearInterval(iv);
+        setUpdateState("idle");
+        setUpdateMsg({ text: "Server chưa lên lại — kiểm tra log hoặc chạy lại server.mjs", error: true });
+      }
+    }, 1500);
+  };
+
+  const checkServerUpdate = async () => {
+    setUpdateState("checking");
+    setUpdateMsg({ text: "Đang kiểm tra trên GitHub..." });
+    try {
+      const r = await apiAuth("/api/admin/server-check", { method: "POST" });
+      setUpdateState("idle");
+      setUpdateMsg(
+        r.behind > 0
+          ? { text: `Có ${r.behind} bản mới: ${r.latest} — ${r.latest_message}`, behind: r.behind }
+          : { text: "Đã là bản mới nhất" }
+      );
+    } catch (e) {
+      setUpdateState("idle");
+      setUpdateMsg({ text: e.message || "Không kiểm tra được", error: true });
+    }
+  };
+
+  const doServerUpdate = async () => {
+    if (!window.confirm("Tải code mới về và khởi động lại server? Màn hình sẽ gián đoạn vài giây.")) return;
+    setUpdateState("updating");
+    setUpdateMsg({ text: "Đang tải bản mới từ GitHub..." });
+    try {
+      await apiAuth("/api/admin/server-update", { method: "POST" });
+    } catch {}
+    pollUntilRestart();
+  };
+
+  const doServerRestart = async () => {
+    if (!window.confirm("Khởi động lại server?")) return;
+    try {
+      await apiAuth("/api/admin/server-restart", { method: "POST" });
+    } catch {}
+    pollUntilRestart();
   };
 
   // ---- Products CRUD ----
@@ -7356,6 +7420,49 @@ function AdminPanel({ embedded = false, onExit }) {
                     {zaloTestResult.debug_message && (
                       <pre className="mt-2 text-xs font-mono whitespace-pre-wrap text-gray-600 bg-white p-2 rounded-lg border">{zaloTestResult.debug_message}</pre>
                     )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Server hệ thống — chỉ hoạt động trên local Node server */}
+            <div className="space-y-4">
+              <h3 className="text-xl font-black text-gray-800">Hệ thống server</h3>
+              <div className="p-6 bg-gray-50 rounded-2xl border border-gray-100 space-y-4">
+                <div>
+                  <p className="font-bold text-gray-700">Phiên bản đang chạy</p>
+                  <p className="text-sm text-gray-500 font-mono mt-1">
+                    {serverInfo
+                      ? `${serverInfo.commit} (${serverInfo.branch}) — ${serverInfo.message}`
+                      : "Không lấy được — chỉ hỗ trợ trên server local Node (server/server.mjs)"}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    onClick={checkServerUpdate}
+                    disabled={updateState !== "idle"}
+                    className="px-5 py-2.5 rounded-xl font-bold text-sm bg-blue-100 text-blue-700 hover:bg-blue-200 transition disabled:opacity-50"
+                  >
+                    {updateState === "checking" ? "Đang kiểm tra..." : "Kiểm tra bản mới"}
+                  </button>
+                  <button
+                    onClick={doServerUpdate}
+                    disabled={updateState === "updating" || updateState === "restarting"}
+                    className="px-5 py-2.5 rounded-xl font-bold text-sm bg-primary-600 text-white hover:bg-primary-700 shadow-lg transition disabled:opacity-50"
+                  >
+                    {updateState === "updating" ? "Đang cập nhật..." : updateState === "restarting" ? "Đang khởi động lại..." : "Cập nhật & khởi động lại"}
+                  </button>
+                  <button
+                    onClick={doServerRestart}
+                    disabled={updateState === "restarting"}
+                    className="px-5 py-2.5 rounded-xl font-bold text-sm bg-gray-200 text-gray-700 hover:bg-gray-300 transition disabled:opacity-50"
+                  >
+                    Khởi động lại
+                  </button>
+                </div>
+                {updateMsg && (
+                  <div className={`p-3 rounded-xl text-sm font-bold ${updateMsg.error ? "bg-red-50 text-red-700 border border-red-200" : "bg-green-50 text-green-700 border border-green-200"}`}>
+                    {updateMsg.text}
                   </div>
                 )}
               </div>

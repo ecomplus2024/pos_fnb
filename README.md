@@ -26,8 +26,10 @@ vào `f-droid.org` trên tablet → cài F-Droid → trong F-Droid cài **Termux
 
 ```bash
 pkg update -y && pkg install -y nodejs git
-git clone https://github.com/ecomplus2024/pos-cloudflare.git
-cd pos-cloudflare
+# Repo PRIVATE — cần GitHub Personal Access Token (Settings → Developer settings
+# → Tokens → Generate, scope "repo"), dùng token làm password khi git hỏi:
+git clone https://github.com/ecomplus2024/pos_fnb.git
+cd pos_fnb
 bash setup-termux.sh      # autostart khi boot + cloudflared (tuỳ chọn)
 node server/server.mjs    # → http://localhost:8787
 ```

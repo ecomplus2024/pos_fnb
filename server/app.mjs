@@ -17,6 +17,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { D1Database } from "./d1.mjs";
 import { createAssets } from "./assets.mjs";
@@ -64,12 +65,95 @@ const broadcastChange = (path) => {
   }
 };
 
+// --- Admin server management: xem version, git pull, restart ---
+// Auth: Bearer token của user role='admin' (bảng sessions+users)
+const sendJson = (res, data, status = 200) => {
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Access-Control-Allow-Origin": "*",
+  });
+  res.end(JSON.stringify(data));
+};
+
+async function requireAdmin(req) {
+  const auth = req.headers["authorization"] || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : null;
+  if (!token) return false;
+  const row = await db
+    .prepare(
+      `SELECT u.role, s.expires_at FROM sessions s
+       JOIN users u ON u.id = s.user_id WHERE s.token = ?`
+    )
+    .bind(token)
+    .first();
+  return !!row && row.role === "admin" && new Date(row.expires_at) > new Date();
+}
+
+// GIT_TERMINAL_PROMPT=0: fail nhanh thay vì treo chờ nhập password (repo private)
+const git = (args, timeout = 30000) =>
+  execSync(`git ${args}`, {
+    cwd: ROOT,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+  }).trim();
+
+const exitSoon = () => setTimeout(() => process.exit(0), 600);
+
+async function handleAdminServer(req, res, pathname) {
+  if (!(await requireAdmin(req))) {
+    sendJson(res, { message: "Chỉ admin" }, 401);
+    return true;
+  }
+  try {
+    if (req.method === "GET" && pathname === "/api/admin/server-info") {
+      sendJson(res, {
+        commit: git("rev-parse --short HEAD"),
+        branch: git("rev-parse --abbrev-ref HEAD"),
+        date: git("log -1 --format=%cI"),
+        message: git("log -1 --format=%s"),
+      });
+      return true;
+    }
+    if (req.method === "POST" && pathname === "/api/admin/server-check") {
+      git("fetch origin", 60000);
+      sendJson(res, {
+        behind: parseInt(git("rev-list --count HEAD..origin/main") || "0", 10),
+        latest: git("rev-parse --short origin/main"),
+        latest_message: git("log -1 --format=%s origin/main"),
+      });
+      return true;
+    }
+    if (req.method === "POST" && pathname === "/api/admin/server-update") {
+      const output = git("pull --ff-only", 120000);
+      sendJson(res, { ok: true, output, restarting: true });
+      exitSoon(); // supervisor loop sẽ chạy lại với code mới
+      return true;
+    }
+    if (req.method === "POST" && pathname === "/api/admin/server-restart") {
+      sendJson(res, { ok: true, restarting: true });
+      exitSoon();
+      return true;
+    }
+  } catch (err) {
+    sendJson(res, { ok: false, error: String(err.stderr || err.message || err) }, 500);
+    return true;
+  }
+  return false;
+}
+
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "0.0.0.0";
 
 http
   .createServer(async (req, res) => {
     const pathname = new URL(req.url || "/", "http://localhost").pathname;
+
+    if (pathname.startsWith("/api/admin/server-")) {
+      if (await handleAdminServer(req, res, pathname)) return;
+    }
+
 
     // SSE endpoint — đặt trước worker (worker không biết route này)
     if (req.method === "GET" && pathname === "/api/events") {
