@@ -25,12 +25,18 @@ ls -lh /tmp/pos-payload.tar.gz
 
 echo "==> [2/6] Đọc bootstrap version/checksums từ build.gradle"
 VARIANT="apt-android-7"
-# Lấy "version" trong nhánh apt-android-7
-VERSION=$(grep -A3 "\"apt-android-7\"" "$GRADLE_FILE" | grep -oP 'def version = "\K[^"]+' | head -1)
-VERSION="${VERSION}%2Bapt.android-7"
+# Hỗ trợ cả 2 format:
+#   mới: def version = "2026.02.12-r1" + "%2B" + "apt.android-7"
+#   cũ : def version = "2025.03.28-r1+apt.android-7"
+RAW=$(grep -m1 -oP 'def version = "\K[^"]+' "$GRADLE_FILE")
+if [[ "$RAW" == *+* ]]; then
+  VERSION="${RAW//+/%2B}"
+else
+  VERSION="${RAW}%2Bapt.android-7"
+fi
 echo "    bootstrap version: $VERSION"
 
-ARCHES=$(grep -oP 'downloadBootstrap\("\K\w+' "$GRADLE_FILE" | sort -u)
+ARCHES=$(grep -oP 'downloadBootstrap\("\K\w+' "$GRADLE_FILE" | sort -u || true)
 echo "    arches: $ARCHES"
 
 echo "==> [3/6] Tải bootstrap zips + inject payload + profile hook"
@@ -89,8 +95,9 @@ if git clone --depth 1 --branch v0.8.1 https://github.com/termux/termux-boot.git
     # Re-sign bằng đúng key của app chính (sharedUserId yêu cầu cùng chữ ký)
     BOOT_APK=$(find . -name "*-debug.apk" | head -1)
     APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
+    APP_KEYSTORE=$(find "../$APP_DIR/app" -maxdepth 1 -name "*.jks" | head -1)
     "$APKSIGNER" sign \
-      --ks "../$APP_DIR/app/testkey_untrusted.jks" \
+      --ks "$APP_KEYSTORE" \
       --ks-pass pass:xrj45yWGLbsO7W0v --key-pass pass:xrj45yWGLbsO7W0v \
       --out /tmp/pos-boot.apk "$BOOT_APK" || cp "$BOOT_APK" /tmp/pos-boot.apk
     echo "    boot APK: /tmp/pos-boot.apk"
