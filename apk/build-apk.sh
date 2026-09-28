@@ -87,6 +87,12 @@ sed -i 's|def file = new File(projectDir, localUrl)|def file = new File(projectD
 cp pos_fnb/apk/POSActivity.java "$APP_DIR/app/src/main/java/com/termux/app/POSActivity.java"
 python3 pos_fnb/apk/patch-manifest.py "$APP_DIR/app/src/main/AndroidManifest.xml"
 
+# FileProvider paths + update manifest URL + versionCode động
+mkdir -p "$APP_DIR/app/src/main/res/xml" "$APP_DIR/app/src/main/assets"
+cp pos_fnb/apk/file_paths.xml "$APP_DIR/app/src/main/res/xml/file_paths.xml"
+cp pos_fnb/apk/update_url.txt "$APP_DIR/app/src/main/assets/update_url.txt" 2>/dev/null || touch "$APP_DIR/app/src/main/assets/update_url.txt"
+sed -i 's|versionCode [0-9]*|versionCode (System.getenv("APK_VERSION_CODE") ?: "1002").toInteger()|' "$GRADLE_FILE"
+
 echo "==> [5/6] Build APK RELEASE + ký production key"
 # Ký bằng key riêng (openssl pk8 + x509, lưu trong GitHub Secrets)
 echo "$POS_SIGN_KEY" | base64 -d > /tmp/pos-signing.pk8

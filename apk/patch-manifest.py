@@ -40,5 +40,20 @@ pos_block = '''        <activity
 if ".app.POSActivity" not in m:
     m = m.replace("        <activity-alias", pos_block + "        <activity-alias", 1)
 
+# FileProvider cho self-update (APK trong cacheDir)
+provider_block = '''        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.termux.updateprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+'''
+if "updateprovider" not in m:
+    m = m.replace("        <provider\n", provider_block + "        <provider\n", 1)
+
 open(path, "w", encoding="utf-8").write(m)
 print("manifest patched")

@@ -40,6 +40,7 @@ jobs:
         env:
           POS_SIGN_KEY: ${{ secrets.POS_SIGN_KEY }}
           POS_SIGN_CERT: ${{ secrets.POS_SIGN_CERT }}
+          APK_VERSION_CODE: ${{ github.run_number }}
         run: bash pos_fnb/apk/build-apk.sh
 
       - name: Upload APKs
