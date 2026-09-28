@@ -15,6 +15,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout pos_fnb
         uses: actions/checkout@v4
@@ -45,3 +47,16 @@ jobs:
             termux-app/app/build/outputs/apk/debug/*.apk
             /tmp/pos-boot.apk
           if-no-files-found: ignore
+
+      - name: Publish to release apk-latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp termux-app/app/build/outputs/apk/debug/*universal*.apk ./POS-Server.apk
+          cp /tmp/pos-boot.apk ./POS-Boot.apk 2>/dev/null || true
+          gh release delete apk-latest -y --cleanup-tag 2>/dev/null || true
+          gh release create apk-latest --title "POS Server APK" \
+            --notes "Auto-build. Cài POS-Server.apk → mở app → tự cài + chạy." \
+            POS-Server.apk POS-Boot.apk 2>/dev/null || \
+          gh release create apk-latest --title "POS Server APK" \
+            --notes "Auto-build." POS-Server.apk
