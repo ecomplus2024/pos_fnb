@@ -55,13 +55,20 @@ jobs:
       - name: Publish to release apk-latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APK_VERSION_CODE: ${{ github.run_number }}
         run: |
           cd pos_fnb
           cp /tmp/POS-Server.apk ./POS-Server.apk
           cp /tmp/pos-boot.apk ./POS-Boot.apk 2>/dev/null || true
+          # version.json cho self-update trong POSActivity
+          cat > version.json <<EOF
+          {"version_code": ${APK_VERSION_CODE:-1},
+           "apk_url": "https://github.com/ecomplus2024/pos_fnb/releases/download/apk-latest/POS-Server.apk",
+           "notes": "POS Server build #${APK_VERSION_CODE:-?}"}
+          EOF
           gh release delete apk-latest -y --cleanup-tag 2>/dev/null || true
           gh release create apk-latest --title "POS Server APK" \
-            --notes "Auto-build. Cài POS-Server.apk → mở app → tự cài + chạy." \
-            POS-Server.apk POS-Boot.apk 2>/dev/null || \
+            --notes "Auto-build #${APK_VERSION_CODE:-?}. Cài POS-Server.apk → mở app → tự cài + chạy." \
+            POS-Server.apk POS-Boot.apk version.json 2>/dev/null || \
           gh release create apk-latest --title "POS Server APK" \
-            --notes "Auto-build." POS-Server.apk
+            --notes "Auto-build." POS-Server.apk version.json

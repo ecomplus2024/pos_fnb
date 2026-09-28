@@ -137,6 +137,22 @@ async function handleAdminServer(req, res, pathname) {
       exitSoon();
       return true;
     }
+    if (req.method === "GET" && pathname === "/api/admin/server-logs") {
+      const tail = (f, lines = 80) => {
+        try {
+          const txt = fs.readFileSync(f, "utf8");
+          return txt.trimEnd().split("\n").slice(-lines).join("\n");
+        } catch {
+          return "";
+        }
+      };
+      const home = process.env.HOME || "";
+      sendJson(res, {
+        pos_log: tail(path.join(home, "pos.log")),
+        watchdog_log: tail(path.join(home, "pos-watchdog.log"), 40),
+      });
+      return true;
+    }
     if (req.method === "GET" && pathname === "/api/admin/sync-status") {
       sendJson(res, getSyncStatus());
       return true;

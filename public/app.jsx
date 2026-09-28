@@ -6504,6 +6504,8 @@ function AdminPanel({ embedded = false, onExit }) {
   const [serverInfo, setServerInfo] = useState(null);
   const [updateState, setUpdateState] = useState("idle"); // idle | checking | updating | restarting
   const [updateMsg, setUpdateMsg] = useState(null); // { text, error, behind }
+  const [serverLogs, setServerLogs] = useState(null); // { pos_log, watchdog_log }
+  const [logsLoading, setLogsLoading] = useState(false);
   // ---- Hub sync state (đồng bộ lên trung tâm cho chuỗi quán)
   const [hub, setHub] = useState({ enabled: false, url: "", store_id: "", api_key: "", api_key_masked: "" });
   const [hubStatus, setHubStatus] = useState(null);
@@ -6630,6 +6632,17 @@ function AdminPanel({ embedded = false, onExit }) {
       await apiAuth("/api/admin/server-restart", { method: "POST" });
     } catch {}
     pollUntilRestart();
+  };
+
+  const fetchServerLogs = async () => {
+    setLogsLoading(true);
+    try {
+      setServerLogs(await apiAuth("/api/admin/server-logs"));
+    } catch {
+      setServerLogs({ pos_log: "", watchdog_log: "Không lấy được log (chỉ có trên server local)" });
+    } finally {
+      setLogsLoading(false);
+    }
   };
 
   // ---- Hub sync ----
@@ -7513,7 +7526,22 @@ function AdminPanel({ embedded = false, onExit }) {
                   >
                     Khởi động lại
                   </button>
+                  <button
+                    onClick={fetchServerLogs}
+                    disabled={logsLoading}
+                    className="px-5 py-2.5 rounded-xl font-bold text-sm bg-gray-200 text-gray-700 hover:bg-gray-300 transition disabled:opacity-50"
+                  >
+                    {logsLoading ? "Đang tải..." : "Xem log"}
+                  </button>
                 </div>
+                {serverLogs && (
+                  <div className="space-y-2">
+                    {serverLogs.watchdog_log && (
+                      <pre className="p-3 rounded-xl text-xs font-mono whitespace-pre-wrap bg-gray-900 text-amber-300 max-h-40 overflow-y-auto">{serverLogs.watchdog_log}</pre>
+                    )}
+                    <pre className="p-3 rounded-xl text-xs font-mono whitespace-pre-wrap bg-gray-900 text-green-300 max-h-60 overflow-y-auto">{serverLogs.pos_log || "(trống)"}</pre>
+                  </div>
+                )}
                 {updateMsg && (
                   <div className={`p-3 rounded-xl text-sm font-bold ${updateMsg.error ? "bg-red-50 text-red-700 border border-red-200" : "bg-green-50 text-green-700 border border-green-200"}`}>
                     {updateMsg.text}

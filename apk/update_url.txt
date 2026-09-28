@@ -1,0 +1,1 @@
+https://github.com/ecomplus2024/pos_fnb/releases/download/apk-latest/version.json

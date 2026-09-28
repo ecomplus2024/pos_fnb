@@ -3484,9 +3484,17 @@ async function ensureHubSchema(env) {
       store_id TEXT UNIQUE NOT NULL,
       name TEXT,
       api_key TEXT NOT NULL,
+      last_sync_at TEXT,
+      last_sync_detail TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`
   ).run();
+  // Migrate DB cũ: ALTER thiếu cột (bỏ qua lỗi nếu đã có)
+  for (const col of ["last_sync_at TEXT", "last_sync_detail TEXT"]) {
+    try {
+      await env.DB.prepare(`ALTER TABLE hub_stores ADD COLUMN ${col}`).run();
+    } catch {}
+  }
   await env.DB.prepare(
     `CREATE TABLE IF NOT EXISTS hub_orders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3573,7 +3581,7 @@ async function handleHubCreateStore(env, body) {
 async function handleHubListStores(env) {
   await ensureHubSchema(env);
   const r = await env.DB.prepare(
-    "SELECT store_id, name, api_key, created_at FROM hub_stores ORDER BY store_id"
+    "SELECT store_id, name, api_key, last_sync_at, last_sync_detail, created_at FROM hub_stores ORDER BY store_id"
   ).all();
   const stores = (r.results || []).map((s) => ({
     ...s,
@@ -3672,6 +3680,10 @@ async function handleHubPush(env, storeId, body) {
     await wipeNotIn("hub_tables", tableIds);
   }
 
+  await env.DB.prepare(
+    "UPDATE hub_stores SET last_sync_at = ?, last_sync_detail = ? WHERE store_id = ?"
+  ).bind(now, `${orders} đơn, ${products} món, ${categories} danh mục, ${tables} bàn`, storeId).run();
+
   return json({ ok: true, received: { orders, products, categories, tables } });
 }
 
@@ -3679,7 +3691,7 @@ async function handleHubReport(env, date) {
   await ensureHubSchema(env);
   const day = date || new Date().toISOString().slice(0, 10);
   const stores = await env.DB.prepare(
-    "SELECT store_id, name FROM hub_stores ORDER BY store_id"
+    "SELECT store_id, name, last_sync_at, last_sync_detail FROM hub_stores ORDER BY store_id"
   ).all();
   const perStore = await env.DB.prepare(
     `SELECT store_id,

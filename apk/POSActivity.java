@@ -2,13 +2,12 @@ package com.termux.app;
 
 import android.app.Activity;
 import android.content.Intent;
-import android.content.pm.PackageInfo;
 import android.net.Uri;
 import android.os.Bundle;
-import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.WindowManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Toast;
@@ -20,6 +19,9 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
 /**
  * POSActivity — màn hình chính của "POS Server" app.
@@ -27,24 +29,45 @@ import java.net.URL;
  *
  * - Chưa cài bootstrap -> mở TermuxActivity để cài (profile hook tự setup POS)
  * - Đã cài -> exec boot script để đảm bảo server chạy -> poll health -> load UI
- * - Mất kết nối -> hiện "đang khởi động" + tự retry
+ * - Watchdog: ping /api/health định kỳ; server chết -> tự chạy lại boot script;
+ *   chết lâu -> màn hình lỗi có nút Khởi động lại / Mở terminal (xem log)
+ * - Mọi sự kiện watchdog ghi vào ~/pos-watchdog.log
  * - Self-update: check version.json (assets/update_url.txt) -> tải APK -> prompt cài
  */
 public class POSActivity extends Activity {
     private static final String PREFIX = "/data/data/com.termux/files/usr";
     private static final String HOME_DIR = "/data/data/com.termux/files/home";
     private static final String POS_URL = "http://localhost:8787";
+    private static final String HEALTH_URL = POS_URL + "/api/health";
+    private static final int WATCHDOG_MS = 8000;      // ping mỗi 8s
+    private static final int RESTART_AFTER_FAILS = 2;  // 2 lần fail -> exec lại boot script
+    private static final int ERROR_AFTER_FAILS = 15;   // ~2 phút -> hiện màn hình lỗi
     private static final String LOADING_HTML =
         "<html><body style='background:#111;color:#eee;display:flex;height:100vh;" +
         "align-items:center;justify-content:center;font-family:sans-serif'>" +
         "<div style='text-align:center'><h2>POS Server</h2><p>Dang khoi dong...</p></div>" +
         "</body></html>";
+    private static final String ERROR_HTML =
+        "<html><body style='background:#111;color:#eee;display:flex;height:100vh;" +
+        "align-items:center;justify-content:center;font-family:sans-serif'>" +
+        "<div style='text-align:center;max-width:80%'>" +
+        "<h2>POS Server</h2>" +
+        "<p style='color:#f88'>Server khong phan hoi. Log: ~/pos.log</p>" +
+        "<button onclick='POS.restartServer()' style='font-size:20px;padding:14px 28px;" +
+        "margin:8px;border-radius:10px;border:0;background:#2563eb;color:#fff'>" +
+        "Khoi dong lai server</button><br/>" +
+        "<button onclick='POS.openTerminal()' style='font-size:16px;padding:10px 22px;" +
+        "margin:8px;border-radius:10px;border:1px solid #666;background:#222;color:#eee'>" +
+        "Mo terminal xem log</button>" +
+        "</div></body></html>";
 
     private WebView web;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable retry = new Runnable() {
         @Override public void run() { web.loadUrl(POS_URL); }
     };
+    private volatile boolean errorScreenShown = false;
+    private long lastRestartAttempt = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -60,17 +83,21 @@ public class POSActivity extends Activity {
         }
 
         ensureServerRunning();
+        startWatchdog();
         checkApkUpdate();
 
         web = new WebView(this);
         web.getSettings().setJavaScriptEnabled(true);
         web.getSettings().setDomStorageEnabled(true);
         web.getSettings().setMediaPlaybackRequiresUserGesture(false);
+        web.addJavascriptInterface(new PosBridge(), "POS");
         web.setWebViewClient(new WebViewClient() {
             @Override
             public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
-                view.loadData(LOADING_HTML, "text/html", "utf-8");
-                handler.postDelayed(retry, 1500);
+                if (!errorScreenShown) {
+                    view.loadData(LOADING_HTML, "text/html", "utf-8");
+                    handler.postDelayed(retry, 1500);
+                }
             }
         });
         setContentView(web);
@@ -81,13 +108,89 @@ public class POSActivity extends Activity {
     // ---------------- Server ----------------
 
     private void ensureServerRunning() {
+        lastRestartAttempt = System.currentTimeMillis();
+        writeWatchdogLog("exec start-pos.sh");
         new Thread(() -> {
             try {
                 new ProcessBuilder(PREFIX + "/bin/bash", "-lc",
                     "bash " + HOME_DIR + "/.termux/boot/start-pos.sh 2>/dev/null || true")
                     .redirectErrorStream(true).start();
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                writeWatchdogLog("exec failed: " + e);
+            }
         }).start();
+    }
+
+    // ---------------- Watchdog ----------------
+    // Ping /api/health. Server chết -> chạy lại boot script (debounce 30s).
+    // Chết > ~2 phút -> màn hình lỗi có nút hành động thay vì xoay tròn mãi.
+
+    private void startWatchdog() {
+        new Thread(() -> {
+            int fails = 0;
+            while (true) {
+                boolean ok = pingHealth();
+                if (ok) {
+                    if (fails > 0) writeWatchdogLog("server up lai sau " + fails + " lan fail");
+                    fails = 0;
+                    if (errorScreenShown) {
+                        errorScreenShown = false;
+                        handler.post(() -> web.loadUrl(POS_URL));
+                    }
+                } else {
+                    fails++;
+                    if (fails == 2) writeWatchdogLog("server khong phan hoi");
+                    if (fails >= RESTART_AFTER_FAILS
+                            && System.currentTimeMillis() - lastRestartAttempt > 30000) {
+                        writeWatchdogLog("watchdog restart server (fails=" + fails + ")");
+                        ensureServerRunning();
+                    }
+                    if (fails >= ERROR_AFTER_FAILS && !errorScreenShown) {
+                        errorScreenShown = true;
+                        writeWatchdogLog("hien man hinh loi");
+                        handler.post(() -> web.loadData(ERROR_HTML, "text/html", "utf-8"));
+                    }
+                }
+                try { Thread.sleep(WATCHDOG_MS); } catch (InterruptedException ignored) {}
+            }
+        }, "pos-watchdog").start();
+    }
+
+    private boolean pingHealth() {
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL(HEALTH_URL).openConnection();
+            c.setConnectTimeout(3000); c.setReadTimeout(3000);
+            boolean ok = c.getResponseCode() == 200;
+            c.disconnect();
+            return ok;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void writeWatchdogLog(String msg) {
+        try {
+            String ts = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date());
+            FileOutputStream fos = new FileOutputStream(HOME_DIR + "/pos-watchdog.log", true);
+            fos.write(("[watchdog " + ts + "] " + msg + "\n").getBytes());
+            fos.close();
+        } catch (Exception ignored) {}
+    }
+
+    class PosBridge {
+        @JavascriptInterface
+        public void restartServer() {
+            writeWatchdogLog("user bam Khoi dong lai server");
+            errorScreenShown = false;
+            handler.post(() -> web.loadData(LOADING_HTML, "text/html", "utf-8"));
+            ensureServerRunning();
+            handler.postDelayed(retry, 3000);
+        }
+        @JavascriptInterface
+        public void openTerminal() {
+            writeWatchdogLog("user mo terminal");
+            startActivity(new Intent(POSActivity.this, TermuxActivity.class));
+        }
     }
 
     // ---------------- Self-update ----------------
@@ -106,6 +209,7 @@ public class POSActivity extends Activity {
                 if (latest <= 0 || apkUrl == null) return;
                 if (latest <= getPackageManager()
                         .getPackageInfo(getPackageName(), 0).versionCode) return;
+                writeWatchdogLog("co ban APK moi (versionCode=" + latest + "), dang tai...");
                 File apk = download(apkUrl, new File(getCacheDir(), "update.apk"));
                 if (apk != null) promptInstall(apk);
             } catch (Exception ignored) {}
@@ -190,7 +294,7 @@ public class POSActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        if (web != null) handler.postDelayed(retry, 500);
+        if (web != null && !errorScreenShown) handler.postDelayed(retry, 500);
     }
 
     @Override
