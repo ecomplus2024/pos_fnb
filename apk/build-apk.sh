@@ -109,12 +109,12 @@ sign_apk() { # $1=unsigned $2=out
 
 cd "$APP_DIR"
 chmod +x gradlew
-if TERMUX_PACKAGE_VARIANT="$VARIANT" ./gradlew assembleRelease --no-daemon; then
+if TERMUX_PACKAGE_VARIANT="$VARIANT" ./gradlew assembleRelease --no-daemon --stacktrace; then
   ls -lh app/build/outputs/apk/release/
   APP_UNSIGNED=$(find app/build/outputs/apk/release -name "*universal*.apk" | head -1)
 else
   echo "    release failed → fallback assembleDebug"
-  TERMUX_PACKAGE_VARIANT="$VARIANT" ./gradlew assembleDebug --no-daemon
+  TERMUX_PACKAGE_VARIANT="$VARIANT" ./gradlew assembleDebug --no-daemon --stacktrace
   APP_UNSIGNED=$(find app/build/outputs/apk/debug -name "*universal*.apk" | head -1)
 fi
 sign_apk "$APP_UNSIGNED" /tmp/POS-Server.apk
