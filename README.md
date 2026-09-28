@@ -38,6 +38,21 @@ khi boot → tạo icon *Start-POS* cho Termux:Widget → chạy server ngay.
 (Hoặc qua git: `git clone https://github.com/ecomplus2024/pos_fnb.git` —
 repo private cần token — rồi `bash pos_fnb/install.sh`.)
 
+### APK riêng "POS Server" (thay Termux — `apk/`)
+
+Build APK trên GitHub Actions: repo → **Actions → Build POS Server APK →
+Run workflow** → artifact `pos-server-apk` (~15 phút).
+
+- `POS-Server.apk` = Termux fork (giữ package `com.termux` nên dùng bootstrap
+  official — build nhanh). Mở app lần đầu tự: cài nodejs → giải nén payload
+  nhúng sẵn → cài autostart → chạy server → in URL. Không cần gõ lệnh.
+- `POS-Boot.apk` = module autostart khi mở máy (cài thêm nếu cần).
+- ⚠️ Xung đột với Termux thật (cùng package name) — gỡ Termux trước khi cài.
+- ⚠️ APK ký bằng debug key (testkey của termux) — chỉ nên sideload nội bộ.
+- Cách hoạt động: `apk/build-apk.sh` tải bootstrap zips chính thức, nhúng
+  `apk/pos-setup.sh` vào `$PREFIX/etc/profile.d/` + payload tar vào `opt/`,
+  vá `build.gradle` bỏ verify checksum & đổi tên app, rồi `assembleDebug`.
+
 **3. Cố định IP tablet** — `ip addr show wlan0 | grep inet` → DHCP reservation trên router.
 
 **4. Thiết bị khác** mở `http://<IP-tablet>:8787` → *Add to Home Screen* (PWA, giống APK):
