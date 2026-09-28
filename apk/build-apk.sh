@@ -73,10 +73,30 @@ for ARCH in $ARCHES; do
 done
 
 echo "==> [4/6] Patch app: tên + WebView launcher + bỏ verify checksum"
-# plugins{} DSL không apply được AGP trên một số runner — dùng apply plugin:
-# (cùng kiểu các module khác trong repo đang dùng, đọc classpath từ buildscript)
-sed -i ':a;N;$!ba;s|plugins {\n    id "com.android.application"\n}|apply plugin: "com.android.application"|' "$GRADLE_FILE"
-grep -n 'com.android.application' "$GRADLE_FILE" | head -3
+# DEBUG: chèn diagnostic — classpath buildscript của :app + kiểm tra plugin apply
+python3 - "$GRADLE_FILE" <<'PYEOF'
+import sys
+p = sys.argv[1]
+src = open(p).read()
+old = 'plugins {\n    id "com.android.application"\n}'
+new = '''println "=== DIAG classpath files ==="
+try {
+    project.buildscript.configurations.classpath.files.each { println "CP: " + it.name }
+} catch (Throwable t) { println "CP-ERR: " + t }
+println "=== DIAG apply plugin ==="
+try {
+    apply plugin: "com.android.application"
+    println "APPLY-OK plugins=" + plugins.collect { it.class.name }
+    println "ANDROID-EXT=" + (extensions.findByName("android") != null)
+} catch (Throwable t) {
+    println "APPLY-FAIL: " + t
+    t.printStackTrace(System.out)
+}'''
+assert old in src, "plugins{} block not found"
+src = src.replace(old, new, 1)
+open(p, "w").write(src)
+PYEOF
+head -20 "$GRADLE_FILE"
 # App name → "POS Server" (entity TERMUX_APP_NAME trong DOCTYPE của strings.xml)
 sed -i 's/manifestPlaceholders.TERMUX_APP_NAME = "Termux"/manifestPlaceholders.TERMUX_APP_NAME = "POS Server"/' "$GRADLE_FILE"
 for STR in "$APP_DIR/app/src/main/res/values/strings.xml" "$APP_DIR/termux-shared/src/main/res/values/strings.xml"; do
@@ -95,7 +115,16 @@ python3 pos_fnb/apk/patch-manifest.py "$APP_DIR/app/src/main/AndroidManifest.xml
 mkdir -p "$APP_DIR/app/src/main/res/xml" "$APP_DIR/app/src/main/assets"
 cp pos_fnb/apk/file_paths.xml "$APP_DIR/app/src/main/res/xml/file_paths.xml"
 cp pos_fnb/apk/update_url.txt "$APP_DIR/app/src/main/assets/update_url.txt" 2>/dev/null || touch "$APP_DIR/app/src/main/assets/update_url.txt"
-sed -i 's|versionCode [0-9]*|versionCode (System.getenv("APK_VERSION_CODE") ?: "1002").toInteger()|' "$GRADLE_FILE"
+# versionCode động: dùng python (sed multiline dễ phá cú pháp groovy)
+python3 - "$GRADLE_FILE" <<'PYEOF'
+import re, sys
+p = sys.argv[1]
+src = open(p).read()
+src = src.replace('versionCode 1002',
+    'versionCode Integer.parseInt(System.getenv("APK_VERSION_CODE") ?: "1002")')
+open(p, "w").write(src)
+PYEOF
+grep -n 'versionCode' "$GRADLE_FILE" | head -3
 
 echo "==> [5/6] Build APK RELEASE + ký production key"
 # Ký bằng key riêng (openssl pk8 + x509, lưu trong GitHub Secrets)
