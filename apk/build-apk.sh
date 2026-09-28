@@ -72,12 +72,16 @@ for ARCH in $ARCHES; do
   cp "/tmp/bootstrap-$ARCH-patched.zip" "$CPP_DIR/bootstrap-$ARCH.zip"
 done
 
-echo "==> [4/6] Patch build.gradle: tên app + bỏ verify checksum"
+echo "==> [4/6] Patch app: tên + WebView launcher + bỏ verify checksum"
 # App name → "POS Server"
 sed -i 's/manifestPlaceholders.TERMUX_APP_NAME = "Termux"/manifestPlaceholders.TERMUX_APP_NAME = "POS Server"/' "$GRADLE_FILE"
 # Bootstrap đã patch: file tồn tại → dùng luôn, bỏ verify checksum
 grep -n 'def file = new File(projectDir, localUrl)' "$GRADLE_FILE"
 sed -i 's|def file = new File(projectDir, localUrl)|def file = new File(projectDir, localUrl)\n        if (file.exists()) { logger.quiet("Using pre-seeded bootstrap: " + localUrl); return }|' "$GRADLE_FILE"
+
+# POSActivity (WebView fullscreen → localhost:8787) làm launcher thay terminal
+cp pos_fnb/apk/POSActivity.java "$APP_DIR/app/src/main/java/com/termux/app/POSActivity.java"
+python3 pos_fnb/apk/patch-manifest.py "$APP_DIR/app/src/main/AndroidManifest.xml"
 
 echo "==> [5/6] Build APK chính"
 cd "$APP_DIR"
