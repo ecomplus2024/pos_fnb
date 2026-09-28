@@ -113,7 +113,8 @@ sign_apk() { # $1=unsigned $2=out
 
 cd "$APP_DIR"
 chmod +x gradlew
-if TERMUX_PACKAGE_VARIANT="$VARIANT" ./gradlew assembleRelease --no-daemon --stacktrace; then
+head -8 app/build.gradle
+if TERMUX_PACKAGE_VARIANT="$VARIANT" ./gradlew assembleRelease --no-daemon --stacktrace --info; then
   ls -lh app/build/outputs/apk/release/
   APP_UNSIGNED=$(find app/build/outputs/apk/release -name "*universal*.apk" | head -1)
 else
