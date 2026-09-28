@@ -73,6 +73,10 @@ for ARCH in $ARCHES; do
 done
 
 echo "==> [4/6] Patch app: tên + WebView launcher + bỏ verify checksum"
+# plugins{} DSL không apply được AGP trên một số runner — dùng apply plugin:
+# (cùng kiểu các module khác trong repo đang dùng, đọc classpath từ buildscript)
+sed -i ':a;N;$!ba;s|plugins {\n    id "com.android.application"\n}|apply plugin: "com.android.application"|' "$GRADLE_FILE"
+grep -n 'com.android.application' "$GRADLE_FILE" | head -3
 # App name → "POS Server" (entity TERMUX_APP_NAME trong DOCTYPE của strings.xml)
 sed -i 's/manifestPlaceholders.TERMUX_APP_NAME = "Termux"/manifestPlaceholders.TERMUX_APP_NAME = "POS Server"/' "$GRADLE_FILE"
 for STR in "$APP_DIR/app/src/main/res/values/strings.xml" "$APP_DIR/termux-shared/src/main/res/values/strings.xml"; do
