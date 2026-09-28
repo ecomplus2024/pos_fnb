@@ -2501,6 +2501,17 @@ async function handleAdminGetSettings(env) {
       api_base: typeof zbObj.api_base === "string" ? zbObj.api_base : "https://bot-api.zaloplatforms.com"
     };
   }
+  const hub = settings["hub"];
+  if (hub && typeof hub === "object") {
+    const hubObj = hub;
+    const key = typeof hubObj.api_key === "string" ? hubObj.api_key : "";
+    settings["hub"] = {
+      enabled: Boolean(hubObj.enabled),
+      url: typeof hubObj.url === "string" ? hubObj.url : "",
+      store_id: typeof hubObj.store_id === "string" ? hubObj.store_id : "",
+      api_key_masked: key ? key.length < 4 ? "***" : "..." + key.slice(-6) : ""
+    };
+  }
   return json(settings);
 }
 async function handleAdminPutSettings(env, request) {
@@ -2532,6 +2543,30 @@ async function handleAdminPutSettings(env, request) {
     }
     await env.DB.prepare(
       "INSERT INTO settings (key, value) VALUES ('zalo_bot', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    ).bind(JSON.stringify(merged)).run();
+  }
+  if (body.hub) {
+    const currentRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'hub'").first();
+    let current = {};
+    if (currentRow) {
+      try {
+        current = JSON.parse(currentRow.value);
+      } catch {
+        current = {};
+      }
+    }
+    const incoming = body.hub;
+    const merged = {
+      ...current,
+      enabled: incoming.enabled ?? current.enabled ?? false,
+      url: incoming.url ?? current.url ?? "",
+      store_id: incoming.store_id ?? current.store_id ?? ""
+    };
+    if (incoming.api_key) {
+      merged.api_key = incoming.api_key;
+    }
+    await env.DB.prepare(
+      "INSERT INTO settings (key, value) VALUES ('hub', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
     ).bind(JSON.stringify(merged)).run();
   }
   return json({ message: "Settings updated", ok: true });
@@ -3388,6 +3423,49 @@ var worker_default = {
         return json({ error: String(err) }, 500);
       }
     }
+    // ================= HUB SYNC (multi-store) =================
+    // Trung tâm nhận data từ các quán (orders/catalog push lên).
+    // Auth: Bearer <api_key của store> cho push/ping; Bearer admin session
+    // cho quản lý stores + report.
+    if (url.pathname === "/api/hub/stores" && request.method === "POST") {
+      const auth = await requireAuth(env, request);
+      const denied = requireRole(auth, ["admin"]);
+      if (denied) return denied;
+      try {
+        const body = await request.json();
+        return await handleHubCreateStore(env, body);
+      } catch (err) {
+        return json({ error: String(err) }, 400);
+      }
+    }
+    if (url.pathname === "/api/hub/stores" && request.method === "GET") {
+      const auth = await requireAuth(env, request);
+      const denied = requireRole(auth, ["admin"]);
+      if (denied) return denied;
+      return await handleHubListStores(env);
+    }
+    if (url.pathname === "/api/hub/ping" && request.method === "GET") {
+      const store = await requireHubStore(env, request);
+      if (!store) return json({ message: "Sai hub key" }, 401);
+      return json({ ok: true, store_id: store.store_id, name: store.name });
+    }
+    if (url.pathname === "/api/hub/push" && request.method === "POST") {
+      const store = await requireHubStore(env, request);
+      if (!store) return json({ message: "Sai hub key" }, 401);
+      try {
+        const body = await request.json();
+        return await handleHubPush(env, store.store_id, body);
+      } catch (err) {
+        return json({ error: String(err) }, 400);
+      }
+    }
+    if (url.pathname === "/api/hub/report" && request.method === "GET") {
+      const auth = await requireAuth(env, request);
+      const denied = requireRole(auth, ["admin"]);
+      if (denied) return denied;
+      return await handleHubReport(env, url.searchParams.get("date"));
+    }
+
     const assetResp = await env.ASSETS.fetch(request);
     if (assetResp.status === 404 && !url.pathname.startsWith("/api/")) {
       const indexResp = await env.ASSETS.fetch(new Request(new URL("/index.html", url)));
@@ -3396,5 +3474,232 @@ var worker_default = {
     return assetResp;
   }
 };
+
+// ================= HUB SYNC handlers =================
+
+async function ensureHubSchema(env) {
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS hub_stores (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store_id TEXT UNIQUE NOT NULL,
+      name TEXT,
+      api_key TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`
+  ).run();
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS hub_orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store_id TEXT NOT NULL,
+      local_id INTEGER NOT NULL,
+      display_code TEXT,
+      order_type TEXT,
+      status TEXT,
+      table_name TEXT,
+      customer_phone TEXT,
+      total INTEGER NOT NULL DEFAULT 0,
+      paid_at TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      items_json TEXT,
+      synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(store_id, local_id)
+    )`
+  ).run();
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS hub_products (
+      store_id TEXT NOT NULL,
+      local_id INTEGER NOT NULL,
+      name TEXT,
+      price INTEGER,
+      category TEXT,
+      available INTEGER,
+      production_unit TEXT,
+      sizes_json TEXT,
+      synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(store_id, local_id)
+    )`
+  ).run();
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS hub_categories (
+      store_id TEXT NOT NULL,
+      local_id INTEGER NOT NULL,
+      name TEXT,
+      sort_order INTEGER,
+      production_unit TEXT,
+      UNIQUE(store_id, local_id)
+    )`
+  ).run();
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS hub_tables (
+      store_id TEXT NOT NULL,
+      local_id INTEGER NOT NULL,
+      name TEXT,
+      seats INTEGER,
+      UNIQUE(store_id, local_id)
+    )`
+  ).run();
+}
+
+async function requireHubStore(env, request) {
+  await ensureHubSchema(env);
+  const auth = request.headers.get("Authorization") || "";
+  const key = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+  if (!key) return null;
+  return await env.DB.prepare(
+    "SELECT store_id, name FROM hub_stores WHERE api_key = ?"
+  ).bind(key).first();
+}
+
+function hubApiKey() {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return "hub_" + Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function handleHubCreateStore(env, body) {
+  await ensureHubSchema(env);
+  const storeId = String(body?.store_id || "").trim();
+  const name = String(body?.name || storeId).trim();
+  if (!storeId) return json({ message: "Thieu store_id" }, 400);
+  const apiKey = hubApiKey();
+  await env.DB.prepare(
+    `INSERT INTO hub_stores (store_id, name, api_key) VALUES (?, ?, ?)
+     ON CONFLICT(store_id) DO UPDATE SET name = excluded.name, api_key = excluded.api_key`
+  ).bind(storeId, name, apiKey).run();
+  return json({ ok: true, store_id: storeId, name, api_key: apiKey });
+}
+
+async function handleHubListStores(env) {
+  await ensureHubSchema(env);
+  const r = await env.DB.prepare(
+    "SELECT store_id, name, api_key, created_at FROM hub_stores ORDER BY store_id"
+  ).all();
+  const stores = (r.results || []).map((s) => ({
+    ...s,
+    api_key: s.api_key ? "..." + String(s.api_key).slice(-6) : "",
+  }));
+  return json({ stores });
+}
+
+async function handleHubPush(env, storeId, body) {
+  await ensureHubSchema(env);
+  const now = new Date().toISOString();
+  let orders = 0, products = 0, categories = 0, tables = 0;
+
+  const orderRows = Array.isArray(body?.orders) ? body.orders : [];
+  for (const o of orderRows) {
+    if (o?.local_id == null) continue;
+    await env.DB.prepare(
+      `INSERT INTO hub_orders (store_id, local_id, display_code, order_type, status,
+        table_name, customer_phone, total, paid_at, created_at, updated_at, items_json, synced_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(store_id, local_id) DO UPDATE SET
+        display_code=excluded.display_code, order_type=excluded.order_type,
+        status=excluded.status, table_name=excluded.table_name,
+        customer_phone=excluded.customer_phone, total=excluded.total,
+        paid_at=excluded.paid_at, updated_at=excluded.updated_at,
+        items_json=excluded.items_json, synced_at=excluded.synced_at`
+    ).bind(
+      storeId, o.local_id, o.display_code || null, o.order_type || "dine_in",
+      o.status || "open", o.table_name || null, o.customer_phone || null,
+      o.total || 0, o.paid_at || null, o.created_at || null, o.updated_at || null,
+      JSON.stringify(o.items || []), now
+    ).run();
+    orders++;
+  }
+
+  const catRows = Array.isArray(body?.categories) ? body.categories : [];
+  const catIds = [];
+  for (const c of catRows) {
+    if (c?.local_id == null) continue;
+    catIds.push(c.local_id);
+    await env.DB.prepare(
+      `INSERT INTO hub_categories (store_id, local_id, name, sort_order, production_unit)
+       VALUES (?,?,?,?,?)
+       ON CONFLICT(store_id, local_id) DO UPDATE SET
+        name=excluded.name, sort_order=excluded.sort_order, production_unit=excluded.production_unit`
+    ).bind(storeId, c.local_id, c.name || "", c.sort_order || 0, c.production_unit || "counter").run();
+    categories++;
+  }
+
+  const prodRows = Array.isArray(body?.products) ? body.products : [];
+  const prodIds = [];
+  for (const p of prodRows) {
+    if (p?.local_id == null) continue;
+    prodIds.push(p.local_id);
+    await env.DB.prepare(
+      `INSERT INTO hub_products (store_id, local_id, name, price, category, available, production_unit, sizes_json, synced_at)
+       VALUES (?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(store_id, local_id) DO UPDATE SET
+        name=excluded.name, price=excluded.price, category=excluded.category,
+        available=excluded.available, production_unit=excluded.production_unit,
+        sizes_json=excluded.sizes_json, synced_at=excluded.synced_at`
+    ).bind(
+      storeId, p.local_id, p.name || "", p.price || 0, p.category || null,
+      p.available ? 1 : 0, p.production_unit || "counter",
+      JSON.stringify(p.sizes || []), now
+    ).run();
+    products++;
+  }
+
+  const tableRows = Array.isArray(body?.tables) ? body.tables : [];
+  const tableIds = [];
+  for (const t of tableRows) {
+    if (t?.local_id == null) continue;
+    tableIds.push(t.local_id);
+    await env.DB.prepare(
+      `INSERT INTO hub_tables (store_id, local_id, name, seats)
+       VALUES (?,?,?,?)
+       ON CONFLICT(store_id, local_id) DO UPDATE SET name=excluded.name, seats=excluded.seats`
+    ).bind(storeId, t.local_id, t.name || "", t.seats || 0).run();
+    tables++;
+  }
+
+  // Xoá catalog bị xoá ở quán (replace semantics) — chỉ khi payload gửi full list
+  if (body?.full_catalog) {
+    const wipeNotIn = async (table, ids) => {
+      if (!ids.length) {
+        await env.DB.prepare(`DELETE FROM ${table} WHERE store_id = ?`).bind(storeId).run();
+      } else {
+        await env.DB.prepare(
+          `DELETE FROM ${table} WHERE store_id = ? AND local_id NOT IN (${ids.map(() => "?").join(",")})`
+        ).bind(storeId, ...ids).run();
+      }
+    };
+    await wipeNotIn("hub_categories", catIds);
+    await wipeNotIn("hub_products", prodIds);
+    await wipeNotIn("hub_tables", tableIds);
+  }
+
+  return json({ ok: true, received: { orders, products, categories, tables } });
+}
+
+async function handleHubReport(env, date) {
+  await ensureHubSchema(env);
+  const day = date || new Date().toISOString().slice(0, 10);
+  const stores = await env.DB.prepare(
+    "SELECT store_id, name FROM hub_stores ORDER BY store_id"
+  ).all();
+  const perStore = await env.DB.prepare(
+    `SELECT store_id,
+       COUNT(*) AS orders_count,
+       SUM(CASE WHEN status = 'completed' OR status = 'paid' THEN total ELSE 0 END) AS revenue
+     FROM hub_orders
+     WHERE substr(created_at, 1, 10) = ?
+     GROUP BY store_id`
+  ).bind(day).all();
+  const totals = await env.DB.prepare(
+    `SELECT store_id, COUNT(*) AS orders_count,
+       SUM(CASE WHEN status = 'completed' OR status = 'paid' THEN total ELSE 0 END) AS revenue
+     FROM hub_orders GROUP BY store_id`
+  ).all();
+  return json({
+    date: day,
+    stores: stores.results || [],
+    today: perStore.results || [],
+    all_time: totals.results || [],
+  });
+}
 
 export default worker_default;

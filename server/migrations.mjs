@@ -17,6 +17,8 @@ const ORDER_COLUMNS = [
   ["longitude", "longitude REAL"],
   ["ship_notes", "ship_notes TEXT"],
   ["payment_status", "payment_status TEXT"],
+  ["synced_at", "synced_at TEXT"],
+  ["updated_at", "updated_at TEXT"],
 ];
 
 export async function initDb(db, { schemaPath }) {
@@ -68,6 +70,15 @@ async function migrate(db) {
     db.exec("ALTER TABLE order_item_toppings ADD COLUMN quantity INTEGER NOT NULL DEFAULT 1");
     console.log("[db] +order_item_toppings.quantity");
   }
+
+  // Trigger giữ updated_at cho sync — chỉ chạy khi synced_at KHÔNG đổi
+  // (mark synced_at không kích trigger → tránh vòng lặp re-push)
+  db.exec(`CREATE TRIGGER IF NOT EXISTS trg_orders_touch
+    AFTER UPDATE ON orders
+    WHEN NEW.synced_at IS OLD.synced_at
+    BEGIN
+      UPDATE orders SET updated_at = datetime('now') WHERE id = NEW.id;
+    END`);
 }
 
 /** Tạo user admin mặc định nếu chưa có user nào */

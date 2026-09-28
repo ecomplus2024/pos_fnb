@@ -23,6 +23,7 @@ import { D1Database } from "./d1.mjs";
 import { createAssets } from "./assets.mjs";
 import { installCacheShim } from "./cache-shim.mjs";
 import { initDb } from "./migrations.mjs";
+import { startSyncLoop, syncNow, hubPing, getSyncStatus } from "./sync.mjs";
 
 installCacheShim();
 
@@ -136,6 +137,18 @@ async function handleAdminServer(req, res, pathname) {
       exitSoon();
       return true;
     }
+    if (req.method === "GET" && pathname === "/api/admin/sync-status") {
+      sendJson(res, getSyncStatus());
+      return true;
+    }
+    if (req.method === "POST" && pathname === "/api/admin/sync-now") {
+      sendJson(res, await syncNow(db));
+      return true;
+    }
+    if (req.method === "POST" && pathname === "/api/admin/sync-test") {
+      sendJson(res, await hubPing(db));
+      return true;
+    }
   } catch (err) {
     sendJson(res, { ok: false, error: String(err.stderr || err.message || err) }, 500);
     return true;
@@ -150,7 +163,7 @@ http
   .createServer(async (req, res) => {
     const pathname = new URL(req.url || "/", "http://localhost").pathname;
 
-    if (pathname.startsWith("/api/admin/server-")) {
+    if (pathname.startsWith("/api/admin/server-") || pathname.startsWith("/api/admin/sync-")) {
       if (await handleAdminServer(req, res, pathname)) return;
     }
 
@@ -215,3 +228,6 @@ http
     console.log(`POS local server: http://localhost:${PORT}`);
     console.log(`LAN: các máy khác truy cập http://<ip-máy-này>:${PORT}`);
   });
+
+// Đồng bộ lên central hub (nếu đã cấu hình trong Admin → Hub)
+startSyncLoop(db);

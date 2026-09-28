@@ -6504,6 +6504,11 @@ function AdminPanel({ embedded = false, onExit }) {
   const [serverInfo, setServerInfo] = useState(null);
   const [updateState, setUpdateState] = useState("idle"); // idle | checking | updating | restarting
   const [updateMsg, setUpdateMsg] = useState(null); // { text, error, behind }
+  // ---- Hub sync state (đồng bộ lên trung tâm cho chuỗi quán)
+  const [hub, setHub] = useState({ enabled: false, url: "", store_id: "", api_key: "", api_key_masked: "" });
+  const [hubStatus, setHubStatus] = useState(null);
+  const [hubMsg, setHubMsg] = useState(null);
+  const [hubSaving, setHubSaving] = useState(false);
 
   useEffect(() => { fetchData(); }, [tab]);
 
@@ -6552,6 +6557,16 @@ function AdminPanel({ embedded = false, onExit }) {
         setZaloBotDirty(false);
         setZaloTestResult(null);
         apiAuth("/api/admin/server-info").then(setServerInfo).catch(() => setServerInfo(null));
+        if (adminSettings?.hub) {
+          setHub({
+            enabled: !!adminSettings.hub.enabled,
+            url: adminSettings.hub.url || "",
+            store_id: adminSettings.hub.store_id || "",
+            api_key: "",
+            api_key_masked: adminSettings.hub.api_key_masked || "",
+          });
+        }
+        apiAuth("/api/admin/sync-status").then(setHubStatus).catch(() => setHubStatus(null));
       }
     } catch (err) {
       showToast("Lỗi tải dữ liệu: " + err.message);
@@ -6615,6 +6630,45 @@ function AdminPanel({ embedded = false, onExit }) {
       await apiAuth("/api/admin/server-restart", { method: "POST" });
     } catch {}
     pollUntilRestart();
+  };
+
+  // ---- Hub sync ----
+  const saveHub = async () => {
+    setHubSaving(true);
+    setHubMsg(null);
+    try {
+      const body = { hub: { enabled: hub.enabled, url: hub.url, store_id: hub.store_id } };
+      if (hub.api_key) body.hub.api_key = hub.api_key;
+      await apiAuth("/api/admin/settings", { method: "PUT", body: JSON.stringify(body) });
+      setHubMsg({ text: "Đã lưu cấu hình hub", error: false });
+    } catch (e) {
+      setHubMsg({ text: e.message || "Lưu thất bại", error: true });
+    } finally {
+      setHubSaving(false);
+    }
+  };
+
+  const testHub = async () => {
+    setHubMsg({ text: "Đang kiểm tra kết nối hub...", error: false });
+    try {
+      const r = await apiAuth("/api/admin/sync-test", { method: "POST" });
+      setHubMsg(r.ok ? { text: `Kết nối OK — quán "${r.name || r.store_id}"`, error: false }
+                     : { text: "Kết nối thất bại: " + (r.detail || ""), error: true });
+    } catch (e) {
+      setHubMsg({ text: e.message || "Không kết nối được", error: true });
+    }
+  };
+
+  const syncHubNow = async () => {
+    setHubMsg({ text: "Đang đồng bộ...", error: false });
+    try {
+      const r = await apiAuth("/api/admin/sync-now", { method: "POST" });
+      setHubStatus(r);
+      setHubMsg(r.ok ? { text: "Đồng bộ xong: " + r.detail, error: false }
+                     : { text: "Đồng bộ lỗi: " + (r.detail || ""), error: true });
+    } catch (e) {
+      setHubMsg({ text: e.message || "Đồng bộ thất bại", error: true });
+    }
   };
 
   // ---- Products CRUD ----
@@ -7464,6 +7518,69 @@ function AdminPanel({ embedded = false, onExit }) {
                   <div className={`p-3 rounded-xl text-sm font-bold ${updateMsg.error ? "bg-red-50 text-red-700 border border-red-200" : "bg-green-50 text-green-700 border border-green-200"}`}>
                     {updateMsg.text}
                   </div>
+                )}
+              </div>
+            </div>
+
+            {/* Đồng bộ trung tâm — chuỗi quán (chỉ trên local Node server) */}
+            <div className="space-y-4">
+              <h3 className="text-xl font-black text-gray-800">Đồng bộ trung tâm (chuỗi quán)</h3>
+              <div className="p-6 bg-gray-50 rounded-2xl border border-gray-100 space-y-4">
+                <p className="text-sm text-gray-500">
+                  Đẩy đơn hàng + thực đơn + bàn lên máy chủ trung tâm. Mỗi quán cần
+                  <b> Mã quán</b> và <b>Hub key</b> do trung tâm cấp (Admin → POST /api/hub/stores).
+                </p>
+                <label className="flex items-center gap-3 font-bold text-gray-700">
+                  <input type="checkbox" checked={hub.enabled}
+                    onChange={(e) => setHub({ ...hub, enabled: e.target.checked })}
+                    className="w-5 h-5 accent-primary-600" />
+                  Bật đồng bộ
+                </label>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-black text-gray-500 uppercase tracking-widest">Địa chỉ hub</label>
+                    <input type="text" value={hub.url} placeholder="https://pos-demo.workers.dev"
+                      onChange={(e) => setHub({ ...hub, url: e.target.value })}
+                      className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-black text-gray-500 uppercase tracking-widest">Mã quán</label>
+                    <input type="text" value={hub.store_id} placeholder="quan-01"
+                      onChange={(e) => setHub({ ...hub, store_id: e.target.value })}
+                      className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-black text-gray-500 uppercase tracking-widest">
+                      Hub key {hub.api_key_masked && <span className="text-gray-400 normal-case">(đã lưu {hub.api_key_masked})</span>}
+                    </label>
+                    <input type="password" value={hub.api_key} placeholder="hub_..."
+                      onChange={(e) => setHub({ ...hub, api_key: e.target.value })}
+                      className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-3">
+                  <button onClick={saveHub} disabled={hubSaving}
+                    className="px-5 py-2.5 rounded-xl font-bold text-sm bg-primary-600 text-white hover:bg-primary-700 shadow-lg transition disabled:opacity-50">
+                    {hubSaving ? "Đang lưu..." : "Lưu cấu hình"}
+                  </button>
+                  <button onClick={testHub}
+                    className="px-5 py-2.5 rounded-xl font-bold text-sm bg-blue-100 text-blue-700 hover:bg-blue-200 transition">
+                    Kiểm tra kết nối
+                  </button>
+                  <button onClick={syncHubNow}
+                    className="px-5 py-2.5 rounded-xl font-bold text-sm bg-gray-200 text-gray-700 hover:bg-gray-300 transition">
+                    Đồng bộ ngay
+                  </button>
+                </div>
+                {hubMsg && (
+                  <div className={`p-3 rounded-xl text-sm font-bold ${hubMsg.error ? "bg-red-50 text-red-700 border border-red-200" : "bg-green-50 text-green-700 border border-green-200"}`}>
+                    {hubMsg.text}
+                  </div>
+                )}
+                {hubStatus?.at && (
+                  <p className="text-xs text-gray-500">
+                    Lần sync cuối: {new Date(hubStatus.at).toLocaleString("vi-VN")} — {hubStatus.detail}
+                  </p>
                 )}
               </div>
             </div>
