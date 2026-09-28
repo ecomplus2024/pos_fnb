@@ -73,11 +73,12 @@ for ARCH in $ARCHES; do
 done
 
 echo "==> [4/6] Patch app: tên + WebView launcher + bỏ verify checksum"
-# App name → "POS Server" (placeholder + string resource application_name)
+# App name → "POS Server" (entity TERMUX_APP_NAME trong DOCTYPE của strings.xml)
 sed -i 's/manifestPlaceholders.TERMUX_APP_NAME = "Termux"/manifestPlaceholders.TERMUX_APP_NAME = "POS Server"/' "$GRADLE_FILE"
-sed -i 's|<string name="application_name">Termux</string>|<string name="application_name">POS Server</string>|' \
-  "$APP_DIR/app/src/main/res/values/strings.xml" || true
-grep -m1 'application_name' "$APP_DIR/app/src/main/res/values/strings.xml"
+for STR in "$APP_DIR/app/src/main/res/values/strings.xml" "$APP_DIR/termux-shared/src/main/res/values/strings.xml"; do
+  [ -f "$STR" ] && sed -i 's|<!ENTITY TERMUX_APP_NAME "Termux">|<!ENTITY TERMUX_APP_NAME "POS Server">|' "$STR"
+done
+grep -m1 'ENTITY TERMUX_APP_NAME' "$APP_DIR/app/src/main/res/values/strings.xml"
 # Bootstrap đã patch: file tồn tại → dùng luôn, bỏ verify checksum
 grep -n 'def file = new File(projectDir, localUrl)' "$GRADLE_FILE"
 sed -i 's|def file = new File(projectDir, localUrl)|def file = new File(projectDir, localUrl)\n        if (file.exists()) { logger.quiet("Using pre-seeded bootstrap: " + localUrl); return }|' "$GRADLE_FILE"
