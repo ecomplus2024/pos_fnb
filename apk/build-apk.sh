@@ -87,11 +87,31 @@ sed -i 's|def file = new File(projectDir, localUrl)|def file = new File(projectD
 cp pos_fnb/apk/POSActivity.java "$APP_DIR/app/src/main/java/com/termux/app/POSActivity.java"
 python3 pos_fnb/apk/patch-manifest.py "$APP_DIR/app/src/main/AndroidManifest.xml"
 
-echo "==> [5/6] Build APK chính"
+echo "==> [5/6] Build APK RELEASE + ký production key"
+# Ký bằng key riêng (openssl pk8 + x509, lưu trong GitHub Secrets)
+echo "$POS_SIGN_KEY" | base64 -d > /tmp/pos-signing.pk8
+echo "$POS_SIGN_CERT" > /tmp/pos-signing.x509.pem
+ZIPALIGN=$(find "$ANDROID_HOME/build-tools" -name zipalign -type f | sort -V | tail -1)
+APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
+
+sign_apk() { # $1=unsigned $2=out
+  "$ZIPALIGN" -p -f 4 "$1" /tmp/aligned.apk
+  "$APKSIGNER" sign --key /tmp/pos-signing.pk8 --cert /tmp/pos-signing.x509.pem \
+    --out "$2" /tmp/aligned.apk
+  "$APKSIGNER" verify --verbose "$2" | tail -1
+}
+
 cd "$APP_DIR"
 chmod +x gradlew
-TERMUX_PACKAGE_VARIANT="$VARIANT" ./gradlew assembleDebug --no-daemon
-ls -lh app/build/outputs/apk/debug/
+if TERMUX_PACKAGE_VARIANT="$VARIANT" ./gradlew assembleRelease --no-daemon; then
+  ls -lh app/build/outputs/apk/release/
+  APP_UNSIGNED=$(find app/build/outputs/apk/release -name "*universal*.apk" | head -1)
+else
+  echo "    release failed → fallback assembleDebug"
+  TERMUX_PACKAGE_VARIANT="$VARIANT" ./gradlew assembleDebug --no-daemon
+  APP_UNSIGNED=$(find app/build/outputs/apk/debug -name "*universal*.apk" | head -1)
+fi
+sign_apk "$APP_UNSIGNED" /tmp/POS-Server.apk
 cd ..
 
 echo "==> [6/6] Build Termux:Boot (autostart khi mở máy) — optional"
@@ -99,17 +119,10 @@ if git clone --depth 1 --branch v0.8.1 https://github.com/termux/termux-boot.git
    git clone --depth 1 https://github.com/termux/termux-boot.git termux-boot; then
   cd termux-boot
   chmod +x gradlew 2>/dev/null || true
-  if ./gradlew assembleDebug --no-daemon; then
+  if ./gradlew assembleRelease --no-daemon || ./gradlew assembleDebug --no-daemon; then
     find . -name "*.apk" | head -10
-    # Re-sign bằng đúng key của app chính (sharedUserId yêu cầu cùng chữ ký)
-    BOOT_APK=$(find . -name "*.apk" | grep -i debug | head -1)
-    BOOT_APK="${BOOT_APK:-$(find . -name "*.apk" | head -1)}"
-    APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
-    APP_KEYSTORE=$(find "../$APP_DIR/app" -maxdepth 1 -name "*.jks" | head -1)
-    "$APKSIGNER" sign \
-      --ks "$APP_KEYSTORE" \
-      --ks-pass pass:xrj45yWGLbsO7W0v --key-pass pass:xrj45yWGLbsO7W0v \
-      --out /tmp/pos-boot.apk "$BOOT_APK" || cp "$BOOT_APK" /tmp/pos-boot.apk
+    BOOT_APK=$(find . -name "*universal*.apk" -o -name "*.apk" | head -1)
+    sign_apk "$BOOT_APK" /tmp/pos-boot.apk
     echo "    boot APK: /tmp/pos-boot.apk"
   fi
   cd ..

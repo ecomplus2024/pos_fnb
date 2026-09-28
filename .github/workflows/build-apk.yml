@@ -37,6 +37,9 @@ jobs:
           java-version: "17"
 
       - name: Build APKs
+        env:
+          POS_SIGN_KEY: ${{ secrets.POS_SIGN_KEY }}
+          POS_SIGN_CERT: ${{ secrets.POS_SIGN_CERT }}
         run: bash pos_fnb/apk/build-apk.sh
 
       - name: Upload APKs
@@ -44,7 +47,7 @@ jobs:
         with:
           name: pos-server-apk
           path: |
-            termux-app/app/build/outputs/apk/debug/*.apk
+            /tmp/POS-Server.apk
             /tmp/pos-boot.apk
           if-no-files-found: ignore
 
@@ -53,7 +56,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd pos_fnb
-          cp ../termux-app/app/build/outputs/apk/debug/*universal*.apk ./POS-Server.apk
+          cp /tmp/POS-Server.apk ./POS-Server.apk
           cp /tmp/pos-boot.apk ./POS-Boot.apk 2>/dev/null || true
           gh release delete apk-latest -y --cleanup-tag 2>/dev/null || true
           gh release create apk-latest --title "POS Server APK" \
