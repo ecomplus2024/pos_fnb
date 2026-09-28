@@ -92,8 +92,10 @@ if git clone --depth 1 --branch v0.8.1 https://github.com/termux/termux-boot.git
   cd termux-boot
   chmod +x gradlew 2>/dev/null || true
   if ./gradlew assembleDebug --no-daemon; then
+    find . -name "*.apk" | head -10
     # Re-sign bằng đúng key của app chính (sharedUserId yêu cầu cùng chữ ký)
-    BOOT_APK=$(find . -name "*-debug.apk" | head -1)
+    BOOT_APK=$(find . -name "*.apk" | grep -i debug | head -1)
+    BOOT_APK="${BOOT_APK:-$(find . -name "*.apk" | head -1)}"
     APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
     APP_KEYSTORE=$(find "../$APP_DIR/app" -maxdepth 1 -name "*.jks" | head -1)
     "$APKSIGNER" sign \
