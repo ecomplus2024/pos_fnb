@@ -73,30 +73,22 @@ for ARCH in $ARCHES; do
 done
 
 echo "==> [4/6] Patch app: tên + WebView launcher + bỏ verify checksum"
-# DEBUG: chèn diagnostic — classpath buildscript của :app + kiểm tra plugin apply
+# plugins{} DSL đôi khi không nhận AGP trên runner (android{} missing) —
+# dùng apply plugin: + assert extension để fail rõ ràng nếu tái phát
 python3 - "$GRADLE_FILE" <<'PYEOF'
 import sys
 p = sys.argv[1]
 src = open(p).read()
 old = 'plugins {\n    id "com.android.application"\n}'
-new = '''println "=== DIAG classpath files ==="
-try {
-    project.buildscript.configurations.classpath.files.each { println "CP: " + it.name }
-} catch (Throwable t) { println "CP-ERR: " + t }
-println "=== DIAG apply plugin ==="
-try {
-    apply plugin: "com.android.application"
-    println "APPLY-OK plugins=" + plugins.collect { it.class.name }
-    println "ANDROID-EXT=" + (extensions.findByName("android") != null)
-} catch (Throwable t) {
-    println "APPLY-FAIL: " + t
-    t.printStackTrace(System.out)
+new = '''project.buildscript.configurations.classpath.files.size()
+apply plugin: "com.android.application"
+if (extensions.findByName("android") == null) {
+    throw new GradleException("AGP 'android' extension not registered")
 }'''
 assert old in src, "plugins{} block not found"
 src = src.replace(old, new, 1)
 open(p, "w").write(src)
 PYEOF
-head -20 "$GRADLE_FILE"
 # App name → "POS Server" (entity TERMUX_APP_NAME trong DOCTYPE của strings.xml)
 sed -i 's/manifestPlaceholders.TERMUX_APP_NAME = "Termux"/manifestPlaceholders.TERMUX_APP_NAME = "POS Server"/' "$GRADLE_FILE"
 for STR in "$APP_DIR/app/src/main/res/values/strings.xml" "$APP_DIR/termux-shared/src/main/res/values/strings.xml"; do
@@ -142,15 +134,10 @@ sign_apk() { # $1=unsigned $2=out
 
 cd "$APP_DIR"
 chmod +x gradlew
-head -8 app/build.gradle
-if TERMUX_PACKAGE_VARIANT="$VARIANT" ./gradlew assembleRelease --no-daemon --stacktrace --info; then
-  ls -lh app/build/outputs/apk/release/
-  APP_UNSIGNED=$(find app/build/outputs/apk/release -name "*universal*.apk" | head -1)
-else
-  echo "    release failed → fallback assembleDebug"
-  TERMUX_PACKAGE_VARIANT="$VARIANT" ./gradlew assembleDebug --no-daemon --stacktrace
-  APP_UNSIGNED=$(find app/build/outputs/apk/debug -name "*universal*.apk" | head -1)
-fi
+# Production: chỉ build release — không fallback debug (debuggable APK ký prod key là rủi ro)
+TERMUX_PACKAGE_VARIANT="$VARIANT" ./gradlew assembleRelease --no-daemon --stacktrace
+ls -lh app/build/outputs/apk/release/
+APP_UNSIGNED=$(find app/build/outputs/apk/release -name "*universal*.apk" | head -1)
 sign_apk "$APP_UNSIGNED" /tmp/POS-Server.apk
 cd ..
 
