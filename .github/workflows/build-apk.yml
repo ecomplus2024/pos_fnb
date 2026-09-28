@@ -52,7 +52,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cp termux-app/app/build/outputs/apk/debug/*universal*.apk ./POS-Server.apk
+          cd pos_fnb
+          cp ../termux-app/app/build/outputs/apk/debug/*universal*.apk ./POS-Server.apk
           cp /tmp/pos-boot.apk ./POS-Boot.apk 2>/dev/null || true
           gh release delete apk-latest -y --cleanup-tag 2>/dev/null || true
           gh release create apk-latest --title "POS Server APK" \
