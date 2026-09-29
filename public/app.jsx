@@ -38,6 +38,13 @@ const CART_PREFIX = "public_cart-";
 const SESSION_PREFIX = "publicSessionId-";
 const WELCOME_KEY = "hasSeenWelcome";
 
+// Lý do tắt nhận đơn ship — chọn khi gạt toggle OFF trong tab Ship
+const SHIP_OFF_REASONS = [
+  "Quán hết giờ bán hàng",
+  "Quán hôm nay nghỉ",
+  "Quán đang quá tải — chỉ nhận ăn tại quán hoặc mang về",
+];
+
 
 // ============ Icons (lucide, inline SVG - khong phu thuoc CDN) ============
 const ICON_PATHS = {
@@ -1111,6 +1118,33 @@ function PosApp({ user, onLogout }) {
   const [takeawayCustomerName, setTakeawayCustomerName] = useState("");
   const [pendingTakeawayCart, setPendingTakeawayCart] = useState(null);
   const [takeawayPaymentModal, setTakeawayPaymentModal] = useState(null); // { orderId }
+  // Ship mode: bật/tắt nhận đơn ship + lý do khi tắt
+  const [shipMode, setShipMode] = useState({ enabled: true, reason: null });
+  const [shipModeBusy, setShipModeBusy] = useState(false);
+  const [showShipOffModal, setShowShipOffModal] = useState(false);
+  useEffect(() => {
+    authFetch("/api/settings").then((d) =>
+      setShipMode({
+        enabled: d.ship_enabled !== false,
+        reason: d.ship_disable_message || d.ship_disable_reason || null,
+      })
+    ).catch(() => {});
+  }, []);
+  const saveShipMode = async (enabled, reason) => {
+    setShipModeBusy(true);
+    try {
+      const r = await authFetch("/api/admin/ship-mode", {
+        method: "POST",
+        body: JSON.stringify({ enabled, reason: reason || null }),
+      });
+      setShipMode({ enabled: r.ship_enabled !== false, reason: r.ship_disable_message || null });
+      setShowShipOffModal(false);
+    } catch (e) {
+      alert("Lỗi đổi chế độ ship: " + (e.message || e));
+    } finally {
+      setShipModeBusy(false);
+    }
+  };
   // Batch 2 Fix 10: delete confirm + reduce quantity modals
   const [deleteConfirmItem, setDeleteConfirmItem] = useState(null); // { cartIndex, orderItemId, name }
   const [reduceModalItem, setReduceModalItem] = useState(null); // { cartIndex, orderItemId, name, currentQty }
@@ -1942,6 +1976,24 @@ function PosApp({ user, onLogout }) {
 
               {tableFilterTab === "ship" && (
                 <div>
+                  {/* Toggle nhận đơn ship — tắt phải chọn lý do (hiện cho khách) */}
+                  <div className={`mb-3 flex items-center justify-between rounded-xl border p-3 ${shipMode.enabled ? "bg-blue-50 border-blue-200" : "bg-red-50 border-red-200"}`}>
+                    <div className="min-w-0">
+                      <div className="text-sm font-black text-gray-800 flex items-center gap-1.5">
+                        <Icon name="truck" className="w-4 h-4" /> Nhận đơn ship online
+                      </div>
+                      <div className={`text-xs mt-0.5 ${shipMode.enabled ? "text-blue-700" : "text-red-600"}`}>
+                        {shipMode.enabled ? "Đang bật — khách đặt được đơn ship" : `Đang tắt — ${shipMode.reason || "không nhận đơn ship"}`}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => shipMode.enabled ? setShowShipOffModal(true) : saveShipMode(true)}
+                      disabled={shipModeBusy}
+                      className={`relative w-14 h-8 rounded-full transition-colors shrink-0 disabled:opacity-50 ${shipMode.enabled ? "bg-blue-600" : "bg-gray-300"}`}
+                    >
+                      <span className={`absolute top-1 w-6 h-6 rounded-full bg-white shadow transition-all ${shipMode.enabled ? "left-7" : "left-1"}`} />
+                    </button>
+                  </div>
                   {(() => {
                     const shipOrders = orders.filter(o => o._kind === "ship");
                     return shipOrders.length === 0 ? (
@@ -2725,6 +2777,29 @@ function PosApp({ user, onLogout }) {
               <button onClick={() => setShowTakeawayNameModal(false)} className="flex-1 py-3 border border-gray-300 rounded-lg font-semibold hover:bg-gray-50">Hủy</button>
               <button onClick={confirmTakeawayName} disabled={!takeawayCustomerName.trim()}
                 className="flex-1 py-3 bg-orange-600 text-white rounded-lg font-bold hover:bg-orange-700 disabled:opacity-50">Gửi đơn</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Ship mode: modal chọn lý do khi tắt nhận đơn ship */}
+      {showShipOffModal && (
+        <div className="fixed inset-0 z-[130] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => setShowShipOffModal(false)}>
+          <div className="bg-white rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="p-6 border-b bg-gray-50">
+              <h3 className="text-xl font-bold text-gray-800">Tắt nhận đơn ship</h3>
+              <p className="text-xs text-gray-500 mt-1">Chọn lý do — sẽ hiển thị cho khách trên trang đặt ship</p>
+            </div>
+            <div className="p-6 space-y-2">
+              {SHIP_OFF_REASONS.map((r) => (
+                <button key={r} onClick={() => saveShipMode(false, r)} disabled={shipModeBusy}
+                  className="w-full text-left p-3 rounded-xl border-2 border-gray-200 hover:border-red-400 hover:bg-red-50 font-semibold text-sm text-gray-700 transition disabled:opacity-50">
+                  {r}
+                </button>
+              ))}
+            </div>
+            <div className="p-4 border-t bg-gray-50">
+              <button onClick={() => setShowShipOffModal(false)} className="w-full py-3 border border-gray-300 rounded-lg font-semibold hover:bg-gray-50">Hủy</button>
             </div>
           </div>
         </div>

@@ -3353,6 +3353,29 @@ var worker_default = {
         return json({ error: String(err) }, 400);
       }
     }
+    // Bật/tắt nhận đơn ship — mọi nhân viên đã đăng nhập đều dùng được
+    if (url.pathname === "/api/admin/ship-mode" && request.method === "POST") {
+      const auth = await requireAuth(env, request);
+      if (!auth.valid) return auth.error;
+      try {
+        const body = await request.json();
+        const enabled = body.enabled !== false;
+        const reason = enabled ? null : String(body.reason || "").trim();
+        if (!enabled && !reason) return json({ message: "Chọn lý do tắt ship" }, 400);
+        const upsert = (k, v) =>
+          env.DB.prepare(
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+          ).bind(k, JSON.stringify(v ?? null));
+        await env.DB.batch([
+          upsert("ship_enabled", enabled),
+          upsert("ship_disable_reason", reason),
+          upsert("ship_disable_message", reason),
+        ]);
+        return json({ success: true, ship_enabled: enabled, ship_disable_message: reason });
+      } catch (err) {
+        return json({ error: String(err) }, 400);
+      }
+    }
     if (url.pathname === "/api/admin/zalo-bot/test" && request.method === "POST") {
       const auth = await requireAuth(env, request);
       const denied = requireRole(auth, ["admin"]);
