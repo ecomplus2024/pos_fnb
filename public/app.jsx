@@ -8,6 +8,10 @@
 
 const { useState, useEffect, useMemo, useRef, useCallback, createContext, useContext } = React;
 
+// Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
+// đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
+const APP_BUILD = "sse-pending-1";
+
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
 
@@ -7527,6 +7531,7 @@ function AdminPanel({ embedded = false, onExit }) {
                       ? `${serverInfo.commit} (${serverInfo.branch}) — ${serverInfo.message}`
                       : "Không lấy được — chỉ hỗ trợ trên server local Node (server/server.mjs)"}
                   </p>
+                  <p className="text-xs text-gray-400 font-mono mt-1">UI build: {APP_BUILD}</p>
                 </div>
                 <div className="flex flex-wrap gap-3">
                   <button

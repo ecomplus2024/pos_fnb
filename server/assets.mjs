@@ -50,7 +50,8 @@ export function createAssets(publicDir) {
           status: 200,
           headers: {
             "Content-Type": MIME[path.extname(filePath).toLowerCase()] || "application/octet-stream",
-            "Cache-Control": "no-cache",
+            // no-store: server local nên không cần cache — tránh WebView giữ app.jsx cũ sau update
+            "Cache-Control": "no-store",
           },
         });
       } catch {

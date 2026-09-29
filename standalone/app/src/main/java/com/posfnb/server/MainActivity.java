@@ -60,6 +60,8 @@ public class MainActivity extends Activity {
         webView.getSettings().setJavaScriptEnabled(true);
         webView.getSettings().setDomStorageEnabled(true);
         webView.getSettings().setAllowFileAccess(false);
+        // Server local luôn phục vụ file mới — tắt cache để update nóng có hiệu lực ngay
+        webView.getSettings().setCacheMode(android.webkit.WebSettings.LOAD_NO_CACHE);
         webView.setWebChromeClient(new WebChromeClient());
         webView.setWebViewClient(new WebViewClient() {
             @Override
