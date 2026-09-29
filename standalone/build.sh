@@ -90,10 +90,12 @@ while read -r FILE; do
     chmod 755 "$JNILIBS/libnode.so"
   fi
   # mọi shared lib (resolve symlink → file thật giữ nguyên soname)
-  find "$USR/lib" -type f -name '*.so*' 2>/dev/null | while read -r so; do
-    base=$(basename "$so")
-    cp -L "$so" "$JNILIBS/$base" < /dev/null
-  done
+  if [ -d "$USR/lib" ]; then
+    find "$USR/lib" -type f -name '*.so*' | while read -r so; do
+      base=$(basename "$so")
+      cp -L "$so" "$JNILIBS/$base" < /dev/null
+    done
+  fi
   echo "    done $FILE"
 done < /tmp/debs.txt
 set +x
