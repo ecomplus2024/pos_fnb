@@ -229,8 +229,10 @@ async function handleAdminServer(req, res, pathname) {
       if (STANDALONE) {
         const head = await latestCommit();
         const deployed = readDeployed();
+        // Chưa từng tarball-update (không có .deployed-commit) → không biết
+        // version thật → coi như có bản mới để user chủ động kéo về.
         sendJson(res, {
-          behind: !deployed || deployed === head.sha ? 0 : 1,
+          behind: deployed === head.sha ? 0 : 1,
           latest: head.sha,
           latest_message: head.message,
         });
