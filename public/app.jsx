@@ -915,9 +915,6 @@ async function fetchKitchenOrdersData(unit) {
 // ============ Global Sync: Context + Polling Hook + Provider ============
 const SyncContext = createContext(null);
 
-// Shared stale ref: KitchenView mutations set this, SyncProvider polls check it
-const syncStaleUntilRef = { current: 0 };
-
 function useSyncPolling() {
   const [tables, setTables] = useState([]);
   const [orders, setOrders] = useState([]);
@@ -927,11 +924,6 @@ function useSyncPolling() {
   const [counterOrders, setCounterOrders] = useState([]);
   const [kitchenCancelled, setKitchenCancelled] = useState({});
   const [counterCancelled, setCounterCancelled] = useState({});
-
-  // Change-detection refs
-  const lastTablesKeyRef = useRef("");
-  const lastKitchenKeyRef = useRef("");
-  const lastCounterKeyRef = useRef("");
 
   // Notification refs (PosApp reads these to play beep/toast)
   const staffCallsRef = useRef([]);
@@ -944,94 +936,66 @@ function useSyncPolling() {
   useEffect(() => {
     let cancelled = false;
 
+    // Local server + ít thiết bị: fetch full luôn, không cần change-key gate
+    // (đó là tối ưu cho D1 remote). SSE báo ngay sau mỗi mutation → data luôn mới.
     const poll = async () => {
-      // Skip nếu đang trong stale period (KitchenView mutations)
-      if (Date.now() < syncStaleUntilRef.current) return;
-
-      // 1. Parallel change-key checks
-      const [tablesChange, kitchenChange, counterChange] = await Promise.all([
-        authFetch("/api/changes?ctx=tables").catch(() => null),
-        authFetch("/api/changes?ctx=kitchen&unit=kitchen").catch(() => null),
-        authFetch("/api/changes?ctx=kitchen&unit=counter").catch(() => null),
-      ]);
-      if (cancelled) return;
-
-      // 2. Fetch full data only when key changed
-      const tasks = [];
-
-      // Tables context
-      if (tablesChange && tablesChange.key !== lastTablesKeyRef.current) {
-        lastTablesKeyRef.current = tablesChange.key;
-        tasks.push(
-          (async () => {
-            const [tblData, callsData, ordersData] = await Promise.all([
-              fetchTablesData().catch(() => null),
-              fetchStaffCallsData().catch(() => []),
-              fetchMergedOrders().catch(() => []),
-            ]);
-            if (cancelled) return;
-            if (tblData) {
-              setTables(tblData.tables);
-              if (tblData.serverTime) {
-                const offset = new Date(tblData.serverTime).getTime() - Date.now();
-                if (Number.isFinite(offset)) setServerOffsetMs(offset);
-              }
+      const tasks = [
+        // Tables + staff calls + orders (POS)
+        (async () => {
+          const [tblData, callsData, ordersData] = await Promise.all([
+            fetchTablesData().catch(() => null),
+            fetchStaffCallsData().catch(() => []),
+            fetchMergedOrders().catch(() => []),
+          ]);
+          if (cancelled) return;
+          if (tblData) {
+            setTables(tblData.tables);
+            if (tblData.serverTime) {
+              const offset = new Date(tblData.serverTime).getTime() - Date.now();
+              if (Number.isFinite(offset)) setServerOffsetMs(offset);
             }
-            // Detect new staff calls
-            const prevIds = new Set(staffCallsRef.current.map((c) => c.id));
-            const newCalls = callsData.filter((c) => !prevIds.has(c.id));
-            if (newCalls.length > 0) newStaffCallsRef.current.push(...newCalls);
-            staffCallsRef.current = callsData;
-            setStaffCalls(callsData);
-            setOrders(ordersData);
-          })()
-        );
-      }
-
-      // Kitchen context
-      if (kitchenChange && kitchenChange.key !== lastKitchenKeyRef.current) {
-        lastKitchenKeyRef.current = kitchenChange.key;
-        tasks.push(
-          (async () => {
-            const data = await fetchKitchenOrdersData("kitchen").catch(() => null);
-            if (cancelled || !data) return;
-            // Detect new orders for audio alert
-            const newIds = new Set(data.orders.map((o) => o.id));
-            for (const id of newIds) {
-              if (!prevKitchenOrderIdsRef.current.has(id)) { newKitchenAlertRef.current = true; break; }
-            }
-            prevKitchenOrderIdsRef.current = newIds;
-            setKitchenOrders(data.orders);
-            setKitchenCancelled(data.cancelledMap);
-          })()
-        );
-      }
-
-      // Counter context
-      if (counterChange && counterChange.key !== lastCounterKeyRef.current) {
-        lastCounterKeyRef.current = counterChange.key;
-        tasks.push(
-          (async () => {
-            const data = await fetchKitchenOrdersData("counter").catch(() => null);
-            if (cancelled || !data) return;
-            const newIds = new Set(data.orders.map((o) => o.id));
-            for (const id of newIds) {
-              if (!prevCounterOrderIdsRef.current.has(id)) { newCounterAlertRef.current = true; break; }
-            }
-            prevCounterOrderIdsRef.current = newIds;
-            setCounterOrders(data.orders);
-            setCounterCancelled(data.cancelledMap);
-          })()
-        );
-      }
-
-      if (tasks.length > 0) await Promise.all(tasks);
+          }
+          // Detect new staff calls
+          const prevIds = new Set(staffCallsRef.current.map((c) => c.id));
+          const newCalls = callsData.filter((c) => !prevIds.has(c.id));
+          if (newCalls.length > 0) newStaffCallsRef.current.push(...newCalls);
+          staffCallsRef.current = callsData;
+          setStaffCalls(callsData);
+          setOrders(ordersData);
+        })(),
+        // Kitchen context
+        (async () => {
+          const data = await fetchKitchenOrdersData("kitchen").catch(() => null);
+          if (cancelled || !data) return;
+          // Detect new orders for audio alert
+          const newIds = new Set(data.orders.map((o) => o.id));
+          for (const id of newIds) {
+            if (!prevKitchenOrderIdsRef.current.has(id)) { newKitchenAlertRef.current = true; break; }
+          }
+          prevKitchenOrderIdsRef.current = newIds;
+          setKitchenOrders(data.orders);
+          setKitchenCancelled(data.cancelledMap);
+        })(),
+        // Counter context
+        (async () => {
+          const data = await fetchKitchenOrdersData("counter").catch(() => null);
+          if (cancelled || !data) return;
+          const newIds = new Set(data.orders.map((o) => o.id));
+          for (const id of newIds) {
+            if (!prevCounterOrderIdsRef.current.has(id)) { newCounterAlertRef.current = true; break; }
+          }
+          prevCounterOrderIdsRef.current = newIds;
+          setCounterOrders(data.orders);
+          setCounterCancelled(data.cancelledMap);
+        })(),
+      ];
+      await Promise.all(tasks);
     };
 
-    // Immediate first poll, then every 5s (tránh race với D1 eventual consistency)
+    // SSE push là chính: mutation → server broadcast → fetch ngay
+    // Interval 15s chỉ là dự phòng nếu SSE rớt (EventSource tự reconnect nhưng vẫn an toàn)
     poll();
-    const interval = setInterval(poll, 5000);
-    // SSE push (local Node server): mutation nào cũng trigger poll ngay — EventSource tự reconnect
+    const interval = setInterval(poll, 15000);
     const es = new EventSource("/api/events");
     es.onmessage = () => poll();
     return () => { cancelled = true; clearInterval(interval); es.close(); };
@@ -3725,7 +3689,7 @@ function PublicMenuView({ tableId, onLogout }) {
 
 // ============ Kitchen / Counter View ============
 
-const KITCHEN_POLL_INTERVAL_MS = 2000; // 2s polling (Workers don't support SSE)
+const KITCHEN_POLL_INTERVAL_MS = 15000; // fallback nếu SSE rớt — SSE là kênh chính
 
 function KitchenView({ unit, onLogout, fill = "screen" }) {
   // Sync context: use shared data when embedded in PosApp
@@ -3744,11 +3708,9 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
   const audioContextRef = useRef(null);
   const lastPlayTime = useRef(0);
   const previousOrderIdsRef = useRef(new Set());
-  // Theo dõi optimistic status: itemId → {status, qty} — ngăn poll ghi đè
+  // Theo dõi optimistic status: itemId → {status, qty, at} — giữ cho tới khi server confirm
   const pendingStatusRef = useRef(new Map());
   const mutationCounter = useRef(0);
-  // Stale period ngắn: local server commit trước khi trả response — chỉ cần phủ request đang bay
-  const staleUntilRef = useRef(0);
   // Phase 5a: online status
   const isOnline = useOnlineStatus();
 
@@ -3920,36 +3882,16 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
     }
   }, [authFetch, unit, playAlertSound, isEmbedded]);
 
-  // Change-detection polling: check lightweight key first, fetch full only when changed
-  const lastKitchenKeyRef = useRef("");
+  // SSE push là chính: mutation → fetch ngay; interval chỉ là dự phòng nếu SSE rớt.
+  // Pending overlay giữ trạng thái mới nên không sợ fetch ghi đè.
   useEffect(() => {
     if (isEmbedded) return; // SyncProvider handles polling
-    const poll = async () => {
-      // Skip nếu đang trong stale period (sau mutation)
-      if (Date.now() < staleUntilRef.current) return;
-      try {
-        const resp = await authFetch(`/api/changes?ctx=kitchen&unit=${unit}`);
-        const changes = await resp.json();
-        if (changes.key === lastKitchenKeyRef.current) return;
-        lastKitchenKeyRef.current = changes.key;
-      } catch {
-        // /api/changes failed → always fetch full data as fallback
-      }
-      // Skip nếu có pending items (đang chờ API)
-      if (pendingStatusRef.current.size > 0) return;
-      fetchOrders();
-    };
-    poll();
-    const interval = setInterval(poll, KITCHEN_POLL_INTERVAL_MS);
-    // SSE push (local server): mutation → fetch ngay, không chờ nhịp poll
+    fetchOrders();
+    const interval = setInterval(fetchOrders, KITCHEN_POLL_INTERVAL_MS);
     const es = new EventSource("/api/events");
-    es.onmessage = () => {
-      if (Date.now() < staleUntilRef.current) return;
-      if (pendingStatusRef.current.size > 0) return;
-      fetchOrders();
-    };
+    es.onmessage = () => fetchOrders();
     return () => { clearInterval(interval); es.close(); };
-  }, [fetchOrders, authFetch, unit, isEmbedded]);
+  }, [fetchOrders, isEmbedded]);
 
   const updateItemStatus = async (itemId, status) => {
     const key = `${itemId}:status`;
@@ -3959,8 +3901,6 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
     // Optimistic: pending chỉ sống trong lúc request bay — server là truth
     pendingStatusRef.current.set(itemId, { status, at: now });
     mutationCounter.current++;
-    staleUntilRef.current = now + 800;
-    syncStaleUntilRef.current = now + 800;
     if (!isEmbedded) {
       setLocalOrders((prev) =>
         prev.map((order) => ({
@@ -4007,8 +3947,6 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
     setItemActionLoading((prev) => ({ ...prev, [key]: true }));
     pendingStatusRef.current.set(item.id, newQty <= 0 ? { deleted: true, at: now } : { qty: newQty, at: now });
     mutationCounter.current++;
-    staleUntilRef.current = now + 800;
-    syncStaleUntilRef.current = now + 800;
     if (!isEmbedded) {
       setLocalOrders((prev) =>
         prev.map((order) => ({
@@ -4054,8 +3992,6 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
     setItemActionLoading((prev) => ({ ...prev, [key]: true }));
     pendingStatusRef.current.set(item.id, { deleted: true, at: now });
     mutationCounter.current++;
-    staleUntilRef.current = now + 800;
-    syncStaleUntilRef.current = now + 800;
     if (!isEmbedded) {
       setLocalOrders((prev) =>
         prev.map((order) => ({
