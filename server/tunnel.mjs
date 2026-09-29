@@ -161,17 +161,29 @@ export async function tunnelApi(db, req, res, pathname, body, sendJson) {
 
       // Account ID: user nhập tay (trang domain → Overview) hoặc tự lấy account đầu
       let account_id = String(body.account_id || "").trim();
-      if (!account_id) {
-        account_id = await step("lấy account", async () => {
-          const accounts = await cfApi(auth, "GET", "/accounts?per_page=5");
-          const id = accounts?.[0]?.id;
-          if (!id) throw new Error("token không thấy account — nhập Account ID tay");
-          return id;
-        });
-      }
+      account_id = await step("lấy account", async () => {
+        let accounts = [];
+        try {
+          accounts = await cfApi(auth, "GET", "/accounts?per_page=50");
+        } catch (e) {
+          if (account_id) return account_id; // token scoped không list được → tin ID user nhập
+          throw e;
+        }
+        if (account_id) {
+          // Verify ID user nhập — tránh copy nhầm Zone ID (format giống hệt)
+          if (!accounts.some((a) => a.id === account_id))
+            throw new Error(
+              "Account ID không thuộc tài khoản này — kiểm tra lại (có thể copy nhầm Zone ID)"
+            );
+          return account_id;
+        }
+        const id = accounts?.[0]?.id;
+        if (!id) throw new Error("token không thấy account — nhập Account ID tay");
+        return id;
+      });
 
       // Reuse tunnel cùng tên nếu đã có (tránh tạo trùng khi setup lại)
-      const tunnel_id = await step("tạo tunnel", async () => {
+      const tunnel_id = await step("tạo tunnel — nếu auth lỗi ở đây: kiểm tra đã kích hoạt Cloudflare Zero Trust chưa (dash → Zero Trust → chọn team name)", async () => {
         const existing = await cfApi(
           auth, "GET", `/accounts/${account_id}/cfd_tunnel?name=${tunnelName}&is_deleted=false`
         );
