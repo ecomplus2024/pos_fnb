@@ -1,0 +1,279 @@
+package com.posfnb.server;
+
+import android.annotation.SuppressLint;
+import android.app.Activity;
+import android.content.Intent;
+import android.content.res.AssetManager;
+import android.graphics.Color;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.view.WindowManager;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.widget.ProgressBar;
+import android.widget.TextView;
+import android.widget.LinearLayout;
+import android.widget.Button;
+import android.view.Gravity;
+
+import androidx.core.content.FileProvider;
+
+import org.json.JSONObject;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+
+/**
+ * Launcher: giải nén code POS lần đầu → start NodeService → WebView → localhost:8787.
+ * Watchdog: server chết >2 phút → màn hình lỗi + nút restart.
+ * Self-update: check version.json trên GitHub release → tải APK → cài.
+ */
+public class MainActivity extends Activity {
+
+    private static final String HEALTH_URL = "http://127.0.0.1:8787/api/health";
+    private static final String POS_URL = "http://127.0.0.1:8787";
+    private static final long POLL_MS = 1500;
+    private static final long FAIL_AFTER_MS = 120000;
+
+    private WebView webView;
+    private Handler handler;
+    private boolean serverUp = false;
+    private long downSince = 0;
+    private boolean extracting = false;
+
+    @SuppressLint("SetJavaScriptEnabled")
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        handler = new Handler(Looper.getMainLooper());
+
+        webView = new WebView(this);
+        webView.getSettings().setJavaScriptEnabled(true);
+        webView.getSettings().setDomStorageEnabled(true);
+        webView.getSettings().setAllowFileAccess(false);
+        webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onReceivedError(WebView view, int code, String desc, String url) {
+                showStatus("Đang khởi động server…");
+                serverUp = false;
+            }
+        });
+        setContentView(webView);
+        showStatus("Đang chuẩn bị…");
+
+        new Thread(this::ensureInstalledAndStart, "pos-setup").start();
+        pollHealth();
+    }
+
+    /** Lần đầu (hoặc sau khi update APK): giải nén assets/pos → filesDir/pos. */
+    private void ensureInstalledAndStart() {
+        try {
+            File posDir = new File(getFilesDir(), "pos");
+            File marker = new File(getFilesDir(), "pos.version");
+            int vc = BuildConfig.VERSION_CODE;
+            int installed = marker.exists() ? readInt(marker) : -1;
+            if (installed != vc || !new File(posDir, "server/server.mjs").exists()) {
+                extracting = true;
+                uiStatus("Đang cài đặt lần đầu…");
+                extractAssets("pos", posDir);
+                writeFile(marker, String.valueOf(vc).getBytes());
+                writeFile(new File(posDir, ".build-version"), String.valueOf(vc).getBytes());
+                extracting = false;
+            }
+        } catch (Exception e) {
+            extracting = false;
+            final String msg = e.toString();
+            handler.post(() -> showFatal("Lỗi cài đặt: " + msg));
+            return;
+        }
+        NodeService.start(this);
+        checkSelfUpdate();
+    }
+
+    private void extractAssets(String assetPath, File outDir) throws IOException {
+        AssetManager am = getAssets();
+        String[] children = am.list(assetPath);
+        if (children == null || children.length == 0) {
+            // file lá
+            File out = new File(getFilesDir(), assetPath);
+            out.getParentFile().mkdirs();
+            try (InputStream in = am.open(assetPath);
+                 OutputStream out_ = new FileOutputStream(out)) {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) out_.write(buf, 0, n);
+            }
+            return;
+        }
+        outDir.mkdirs();
+        for (String child : children) {
+            extractAssets(assetPath + "/" + child, new File(outDir, child));
+        }
+    }
+
+    private void pollHealth() {
+        handler.postDelayed(() -> {
+            new Thread(() -> {
+                boolean ok = ping();
+                handler.post(() -> {
+                    if (ok) {
+                        downSince = 0;
+                        if (!serverUp) {
+                            serverUp = true;
+                            setContentView(webView);
+                            webView.loadUrl(POS_URL);
+                        }
+                    } else {
+                        serverUp = false;
+                        if (!extracting) {
+                            if (downSince == 0) downSince = System.currentTimeMillis();
+                            if (System.currentTimeMillis() - downSince > FAIL_AFTER_MS) {
+                                showFatal("Server POS không phản hồi.");
+                            } else {
+                                showStatus("Đang khởi động server…");
+                            }
+                            NodeService.start(this); // service tự respawn node
+                        }
+                    }
+                    pollHealth();
+                });
+            }).start();
+        }, POLL_MS);
+    }
+
+    private boolean ping() {
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL(HEALTH_URL).openConnection();
+            c.setConnectTimeout(2000);
+            c.setReadTimeout(2000);
+            return c.getResponseCode() == 200;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // ---------- Self-update ----------
+
+    private void checkSelfUpdate() {
+        try {
+            InputStream in = getAssets().open("update_url.txt");
+            byte[] buf = new byte[in.available()];
+            in.read(buf);
+            in.close();
+            String url = new String(buf).trim();
+            if (url.isEmpty()) return;
+            new Thread(() -> fetchVersion(url)).start();
+        } catch (Exception ignored) {}
+    }
+
+    private void fetchVersion(String url) {
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(8000);
+            if (c.getResponseCode() != 200) return;
+            byte[] buf = readAll(c.getInputStream());
+            JSONObject j = new JSONObject(new String(buf));
+            int remote = j.getInt("version_code");
+            String apkUrl = j.getString("apk_url");
+            if (remote > BuildConfig.VERSION_CODE) downloadAndInstall(apkUrl);
+        } catch (Exception ignored) {}
+    }
+
+    private void downloadAndInstall(String apkUrl) {
+        try {
+            File dir = new File(getCacheDir(), "apks");
+            dir.mkdirs();
+            File apk = new File(dir, "update.apk");
+            HttpURLConnection c = (HttpURLConnection) new URL(apkUrl).openConnection();
+            c.setConnectTimeout(15000);
+            c.setReadTimeout(300000);
+            try (InputStream in = c.getInputStream();
+                 FileOutputStream out = new FileOutputStream(apk)) {
+                byte[] buf = new byte[65536];
+                int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            }
+            Uri uri = FileProvider.getUriForFile(this,
+                "com.posfnb.server.provider", apk);
+            Intent i = new Intent(Intent.ACTION_VIEW)
+                .setDataAndType(uri, "application/vnd.android.package-archive")
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            handler.post(() -> startActivity(i));
+        } catch (Exception ignored) {}
+    }
+
+    private static byte[] readAll(InputStream in) throws IOException {
+        java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+        return bos.toByteArray();
+    }
+
+    // ---------- UI helpers ----------
+
+    private void uiStatus(String s) {
+        handler.post(() -> showStatus(s));
+    }
+
+    private void showStatus(String msg) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(Gravity.CENTER);
+        box.setBackgroundColor(Color.WHITE);
+        ProgressBar pb = new ProgressBar(this);
+        TextView tv = new TextView(this);
+        tv.setText(msg);
+        tv.setGravity(Gravity.CENTER);
+        tv.setPadding(32, 24, 32, 24);
+        box.addView(pb);
+        box.addView(tv);
+        setContentView(box);
+    }
+
+    private void showFatal(String msg) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(Gravity.CENTER);
+        box.setBackgroundColor(Color.WHITE);
+        TextView tv = new TextView(this);
+        tv.setText(msg + "\n\nLog: xem Admin → Server logs");
+        tv.setGravity(Gravity.CENTER);
+        tv.setPadding(48, 24, 48, 24);
+        Button btn = new Button(this);
+        btn.setText("Khởi động lại");
+        btn.setOnClickListener(v -> {
+            downSince = 0;
+            NodeService.start(this);
+            showStatus("Đang khởi động lại…");
+        });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.gravity = Gravity.CENTER;
+        box.addView(tv);
+        box.addView(btn, lp);
+        setContentView(box);
+    }
+
+    private int readInt(File f) {
+        try {
+            byte[] b = new byte[(int) f.length()];
+            InputStream in = new java.io.FileInputStream(f);
+            int n = in.read(b); in.close();
+            return Integer.parseInt(new String(b, 0, Math.max(0, n)).trim());
+        } catch (Exception e) { return -1; }
+    }
+
+    private void writeFile(File f, byte[] data) throws IOException {
+        try (FileOutputStream out = new FileOutputStream(f)) { out.write(data); }
+    }
+}

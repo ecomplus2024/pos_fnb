@@ -1,0 +1,45 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.posfnb.server'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.posfnb.server"
+        minSdk 24
+        // targetSdk 33: tránh hạn chế FGS-type/boot của SDK 34-35 (app sideload, không qua Play)
+        targetSdk 33
+        versionCode Integer.parseInt(System.getenv("APK_VERSION_CODE") ?: "1")
+        versionName "1.0." + versionCode
+    }
+
+    packagingOptions {
+        jniLibs {
+            // Cho phép nén .so trong APK (node binary ~40MB → nén ~10MB)
+            // Lib vẫn được giải nén ra nativeLibraryDir vì extractNativeLibs=true
+            useLegacyPackaging = true
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core:1.13.1'
+}

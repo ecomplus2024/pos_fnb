@@ -1,0 +1,53 @@
+name: Build POS Standalone APK (no Termux)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout pos_fnb
+        uses: actions/checkout@v4
+        with:
+          path: pos_fnb
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build APK
+        env:
+          POS_SIGN_KEY: ${{ secrets.POS_SIGN_KEY }}
+          POS_SIGN_CERT: ${{ secrets.POS_SIGN_CERT }}
+          APK_VERSION_CODE: ${{ github.run_number }}
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          cp -r pos_fnb/standalone ./standalone
+          bash standalone/build.sh
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: pos-standalone-apk
+          path: /tmp/POS-Standalone.apk
+
+      - name: Publish to release apk-latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APK_VERSION_CODE: ${{ github.run_number }}
+        run: |
+          cd pos_fnb
+          cp /tmp/POS-Standalone.apk ./POS-Standalone.apk
+          cat > version-standalone.json <<EOF
+          {"version_code": ${APK_VERSION_CODE:-1},
+           "apk_url": "https://github.com/ecomplus2024/pos_fnb/releases/download/apk-latest/POS-Standalone.apk",
+           "notes": "POS Server standalone build #${APK_VERSION_CODE:-?}"}
+          EOF
+          # Release apk-latest đã tồn tại (từ workflow termux) → chỉ upload thêm asset
+          gh release upload apk-latest POS-Standalone.apk version-standalone.json --clobber || {
+            gh release create apk-latest --title "POS Server APK" \
+              --notes "Auto-build." POS-Standalone.apk version-standalone.json
+          }

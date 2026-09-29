@@ -102,6 +102,94 @@ const git = (args, timeout = 30000) =>
 
 const exitSoon = () => setTimeout(() => process.exit(0), 600);
 
+// --- Standalone APK: không có .git (code nằm trong assets, giải nén ra disk) ---
+// Update bằng tarball GitHub thay git pull.
+const STANDALONE = !fs.existsSync(path.join(ROOT, ".git"));
+const REPO = "ecomplus2024/pos_fnb";
+const REPO_API = `https://api.github.com/repos/${REPO}/commits/main`;
+const REPO_TARBALL = `https://codeload.github.com/${REPO}/tar.gz/refs/heads/main`;
+// Chỉ ghi đè những đường dẫn này — data/, file lỗi người dùng không động vào
+const UPDATE_PATHS = /^(server|public|src)\/|^schema\.sql$|^package\.json$/;
+
+const readDeployed = () => {
+  try {
+    return fs.readFileSync(path.join(ROOT, ".deployed-commit"), "utf8").trim();
+  } catch {
+    return null;
+  }
+};
+const buildVersion = () => {
+  try {
+    return "apk-" + fs.readFileSync(path.join(ROOT, ".build-version"), "utf8").trim();
+  } catch {
+    return "standalone";
+  }
+};
+
+async function latestCommit() {
+  const r = await fetch(REPO_API, {
+    headers: { "User-Agent": "pos-standalone" },
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!r.ok) throw new Error("GitHub API " + r.status);
+  const j = await r.json();
+  return {
+    sha: j.sha.slice(0, 7),
+    message: j.commit.message.split("\n")[0],
+    date: j.commit.committer.date,
+  };
+}
+
+// Giải nén tar (ustar + GNU longname 'L'), chỉ file match UPDATE_PATHS
+function untarSelective(buf, dest) {
+  let off = 0;
+  let longName = null;
+  let count = 0;
+  while (off + 512 <= buf.length) {
+    const h = buf.subarray(off, off + 512);
+    if (h[0] === 0) break;
+    const str = (a, b) => h.subarray(a, b).toString("utf8").replace(/\0.*$/, "");
+    const size = parseInt(str(124, 136).trim() || "0", 8);
+    const type = String.fromCharCode(h[156]);
+    const full = longName || (str(345, 500) ? str(345, 500) + "/" + str(0, 100) : str(0, 100));
+    longName = null;
+    const data = buf.subarray(off + 512, off + 512 + size);
+    off += 512 + Math.ceil(size / 512) * 512;
+    if (type === "L") {
+      longName = data.toString("utf8").replace(/\0.*$/, "");
+      continue;
+    }
+    // Bỏ component đầu ("pos_fnb-main/")
+    const rel = full.split("/").slice(1).join("/");
+    if (!rel || !UPDATE_PATHS.test(rel)) continue;
+    const target = path.normalize(path.join(dest, rel));
+    if (!target.startsWith(dest)) continue;
+    if (type === "5") {
+      fs.mkdirSync(target, { recursive: true });
+      continue;
+    }
+    if (type !== "0" && type !== "\0") continue;
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, data);
+    count++;
+  }
+  return count;
+}
+
+async function tarballUpdate() {
+  const r = await fetch(REPO_TARBALL, {
+    headers: { "User-Agent": "pos-standalone" },
+    signal: AbortSignal.timeout(120000),
+  });
+  if (!r.ok) throw new Error("Tải tarball lỗi " + r.status);
+  const { gunzipSync } = await import("node:zlib");
+  const tar = gunzipSync(Buffer.from(await r.arrayBuffer()));
+  const n = untarSelective(tar, ROOT);
+  const head = await latestCommit().catch(() => null);
+  if (head) fs.writeFileSync(path.join(ROOT, ".deployed-commit"), head.sha);
+  return `updated ${n} files → ${head ? head.sha : "?"}`;
+}
+
 async function handleAdminServer(req, res, pathname) {
   if (!(await requireAdmin(req))) {
     sendJson(res, { message: "Chỉ admin" }, 401);
@@ -109,6 +197,15 @@ async function handleAdminServer(req, res, pathname) {
   }
   try {
     if (req.method === "GET" && pathname === "/api/admin/server-info") {
+      if (STANDALONE) {
+        sendJson(res, {
+          commit: readDeployed() || buildVersion(),
+          branch: "standalone",
+          date: "",
+          message: "APK standalone",
+        });
+        return true;
+      }
       sendJson(res, {
         commit: git("rev-parse --short HEAD"),
         branch: git("rev-parse --abbrev-ref HEAD"),
@@ -118,6 +215,16 @@ async function handleAdminServer(req, res, pathname) {
       return true;
     }
     if (req.method === "POST" && pathname === "/api/admin/server-check") {
+      if (STANDALONE) {
+        const head = await latestCommit();
+        const deployed = readDeployed();
+        sendJson(res, {
+          behind: !deployed || deployed === head.sha ? 0 : 1,
+          latest: head.sha,
+          latest_message: head.message,
+        });
+        return true;
+      }
       git("fetch origin", 60000);
       sendJson(res, {
         behind: parseInt(git("rev-list --count HEAD..origin/main") || "0", 10),
@@ -127,9 +234,11 @@ async function handleAdminServer(req, res, pathname) {
       return true;
     }
     if (req.method === "POST" && pathname === "/api/admin/server-update") {
-      const output = git("pull --ff-only", 120000);
+      const output = STANDALONE
+        ? await tarballUpdate()
+        : git("pull --ff-only", 120000);
       sendJson(res, { ok: true, output, restarting: true });
-      exitSoon(); // supervisor loop sẽ chạy lại với code mới
+      exitSoon(); // supervisor/service sẽ chạy lại với code mới
       return true;
     }
     if (req.method === "POST" && pathname === "/api/admin/server-restart") {
