@@ -17,8 +17,20 @@ JNILIBS="$SA/app/src/main/jniLibs/arm64-v8a"
 ASSETS="$SA/app/src/main/assets"
 
 echo "==> [1/6] Resolve node deps từ termux-packages (aarch64)"
-REPO="https://packages-cf.termux.dev/apt/termux-main"
-curl -fsSL "$REPO/dists/stable/main/binary-aarch64/Packages" -o /tmp/Packages
+# Thử lần lượt các mirror — runner GitHub đôi khi bị một mirror chặn
+MIRRORS="https://packages-cf.termux.dev/apt/termux-main
+https://packages.termux.dev/apt/termux-main
+https://grimler.se/termux/termux-main
+https://mirrors.tuna.tsinghua.edu.cn/termux/apt/termux-main
+https://mirror.mwt.me/termux/main"
+REPO=""
+for M in $MIRRORS; do
+  echo "    thử mirror: $M"
+  if curl -fSL --connect-timeout 10 -o /tmp/Packages "$M/dists/stable/main/binary-aarch64/Packages"; then
+    REPO="$M"; echo "    OK"; break
+  fi
+done
+[ -n "$REPO" ] || { echo "LỖI: mọi mirror đều không tải được Packages"; exit 1; }
 
 python3 - <<'PYEOF'
 import re
@@ -67,7 +79,7 @@ while read -r FILE; do
   [ -z "$FILE" ] && continue
   DEB="/tmp/debs/$(basename "$FILE")"
   echo "    <- $FILE"
-  curl -fsSL "$REPO/$FILE" -o "$DEB"
+  curl -fSL --connect-timeout 15 --retry 3 "$REPO/$FILE" -o "$DEB"
   rm -rf /tmp/debx && mkdir -p /tmp/debx
   dpkg-deb -x "$DEB" /tmp/debx
   USR=/tmp/debx/data/data/com.termux/files/usr
