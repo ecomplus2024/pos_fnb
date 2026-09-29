@@ -145,6 +145,13 @@ for t in targets:
     for old, new in patches.items():
         subprocess.run(['patchelf', '--replace-needed', old, new, t],
                        capture_output=True)
+
+# Bionic kiểm tra verneed theo SONAME của lib đã load — lib đổi tên phải
+# có SONAME = tên file mới, nếu không linker báo "cannot find X from verneed".
+for f in os.listdir(OUT):
+    if f.endswith('.so'):
+        p = os.path.join(OUT, f)
+        subprocess.run(['patchelf', '--set-soname', f, p], capture_output=True)
 print('patched', len(targets), 'binaries')
 PYEOF
 
