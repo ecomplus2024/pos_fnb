@@ -6511,7 +6511,7 @@ function AdminPanel({ embedded = false, onExit }) {
   const [hubStatus, setHubStatus] = useState(null);
   const [hubMsg, setHubMsg] = useState(null);
   const [hubSaving, setHubSaving] = useState(false);
-  const [tun, setTun] = useState({ token: "", email: "", zones: [], zone_id: "", zone_name: "", subdomain: "" });
+  const [tun, setTun] = useState({ token: "", email: "", account_id: "", zones: [], zone_id: "", zone_name: "", subdomain: "" });
   const [tunStatus, setTunStatus] = useState(null);
   const [tunMsg, setTunMsg] = useState(null);
   const [tunBusy, setTunBusy] = useState(false);
@@ -6711,8 +6711,8 @@ function AdminPanel({ embedded = false, onExit }) {
       const r = await apiAuth("/api/admin/tunnel-setup", {
         method: "POST",
         body: JSON.stringify({
-          token: tun.token, email: tun.email, zone_id: tun.zone_id,
-          zone_name: tun.zone_name, subdomain: tun.subdomain,
+          token: tun.token, email: tun.email, account_id: tun.account_id,
+          zone_id: tun.zone_id, zone_name: tun.zone_name, subdomain: tun.subdomain,
         }),
       });
       setTunStatus(r);
@@ -7686,7 +7686,7 @@ function AdminPanel({ embedded = false, onExit }) {
                     )}
                   </div>
                 )}
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div className="space-y-1">
                     <label className="text-xs font-black text-gray-500 uppercase tracking-widest">API token / Global key</label>
                     <input type="password" value={tun.token} placeholder="eyJh... hoặc key hex"
@@ -7697,6 +7697,12 @@ function AdminPanel({ embedded = false, onExit }) {
                     <label className="text-xs font-black text-gray-500 uppercase tracking-widest">Email CF (nếu Global key)</label>
                     <input type="text" value={tun.email} placeholder="you@email.com"
                       onChange={(e) => setTun({ ...tun, email: e.target.value })}
+                      className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-black text-gray-500 uppercase tracking-widest">Account ID (tùy chọn)</label>
+                    <input type="text" value={tun.account_id} placeholder="để trống = tự lấy"
+                      onChange={(e) => setTun({ ...tun, account_id: e.target.value })}
                       className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
                   </div>
                   <div className="space-y-1">

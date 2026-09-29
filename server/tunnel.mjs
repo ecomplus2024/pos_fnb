@@ -149,9 +149,13 @@ export async function tunnelApi(db, req, res, pathname, body, sendJson) {
         if (!zone_id) throw new Error(`Không thấy domain "${zone_name}" trong tài khoản`);
       }
 
-      const accounts = await cfApi(auth, "GET", "/accounts?per_page=5");
-      const account_id = accounts?.[0]?.id;
-      if (!account_id) throw new Error("Token không thấy account nào");
+      // Account ID: user nhập tay (trang domain → Overview) hoặc tự lấy account đầu
+      let account_id = String(body.account_id || "").trim();
+      if (!account_id) {
+        const accounts = await cfApi(auth, "GET", "/accounts?per_page=5");
+        account_id = accounts?.[0]?.id;
+        if (!account_id) throw new Error("Token không thấy account nào — nhập Account ID tay");
+      }
 
       // Reuse tunnel cùng tên nếu đã có (tránh tạo trùng khi setup lại)
       let tunnel_id = null;
