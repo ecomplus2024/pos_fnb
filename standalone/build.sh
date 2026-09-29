@@ -75,13 +75,14 @@ PYEOF
 
 echo "==> [2/6] Tải debs + extract libs → jniLibs"
 mkdir -p "$JNILIBS" /tmp/debs
+set -x
 while read -r FILE; do
   [ -z "$FILE" ] && continue
   DEB="/tmp/debs/$(basename "$FILE")"
   echo "    <- $FILE"
-  curl -fSL --connect-timeout 15 --retry 3 "$REPO/$FILE" -o "$DEB"
+  curl -fSL --connect-timeout 15 --retry 3 "$REPO/$FILE" -o "$DEB" < /dev/null
   rm -rf /tmp/debx && mkdir -p /tmp/debx
-  dpkg-deb -x "$DEB" /tmp/debx
+  dpkg-deb -x "$DEB" /tmp/debx < /dev/null
   USR=/tmp/debx/data/data/com.termux/files/usr
   # node binary → libnode.so (jniLibs → nativeLibraryDir, exec được)
   if [ -f "$USR/bin/node" ]; then
@@ -91,9 +92,11 @@ while read -r FILE; do
   # mọi shared lib (resolve symlink → file thật giữ nguyên soname)
   find "$USR/lib" -type f -name '*.so*' 2>/dev/null | while read -r so; do
     base=$(basename "$so")
-    cp -L "$so" "$JNILIBS/$base"
+    cp -L "$so" "$JNILIBS/$base" < /dev/null
   done
+  echo "    done $FILE"
 done < /tmp/debs.txt
+set +x
 
 echo "    jniLibs:"
 ls -lhS "$JNILIBS" | head -15
