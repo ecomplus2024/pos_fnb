@@ -1292,6 +1292,40 @@ function PosApp({ user, onLogout }) {
     return `${it.id}|${sizePart}|${topPart}|${notePart}`;
   };
 
+  // Món mới = cart hiện tại trừ snapshot đã gửi (initialCart).
+  // QUAN TRỌNG: mọi đường POST /api/orders phải gửi delta này — server
+  // append thẳng vào đơn pending, gửi nguyên cart sẽ ghi trùng món.
+  const computeNewItems = (cartItems, initialItems) => {
+    const initialMap = new Map();
+    for (const it of initialItems) {
+      const key = cartIdentity(it);
+      initialMap.set(key, (initialMap.get(key) || 0) + it.qty);
+    }
+    const currentMap = new Map();
+    for (const it of cartItems) {
+      const key = cartIdentity(it);
+      currentMap.set(key, (currentMap.get(key) || 0) + it.qty);
+    }
+    const out = [];
+    const seen = new Set();
+    for (const it of cartItems) {
+      const key = cartIdentity(it);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const delta = (currentMap.get(key) || 0) - (initialMap.get(key) || 0);
+      if (delta > 0) {
+        out.push({
+          product_id: it.id,
+          quantity: delta,
+          size_id: it.size?.id,
+          toppings: (it.toppings || []).map((t) => t.id),
+          note: it.notes || "",
+        });
+      }
+    }
+    return out;
+  };
+
   // Fix 2: delete a submitted item on the server (with local fallback)
   const deleteServerItem = async (it) => {
     if (!it.orderItemId || !currentOrderId) return;
@@ -1468,35 +1502,7 @@ function PosApp({ user, onLogout }) {
     setSubmitting(true);
     try {
       // Compute delta vs initialCart (snapshot after previous successful submit)
-      const initialMap = new Map();
-      for (const it of initialCart) {
-        const key = cartIdentity(it);
-        initialMap.set(key, (initialMap.get(key) || 0) + it.qty);
-      }
-      const currentMap = new Map();
-      for (const it of cart) {
-        const key = cartIdentity(it);
-        currentMap.set(key, (currentMap.get(key) || 0) + it.qty);
-      }
-      const newItems = [];
-      const seenKeys = new Set();
-      for (const it of cart) {
-        const key = cartIdentity(it);
-        if (seenKeys.has(key)) continue;
-        seenKeys.add(key);
-        const initQty = initialMap.get(key) || 0;
-        const curQty = currentMap.get(key) || 0;
-        const delta = curQty - initQty;
-        if (delta > 0) {
-          newItems.push({
-            product_id: it.id,
-            quantity: delta,
-            size_id: it.size?.id,
-            toppings: (it.toppings || []).map((t) => t.id),
-            note: it.notes || "",
-          });
-        }
-      }
+      const newItems = computeNewItems(cart, initialCart);
       if (newItems.length === 0) {
         showToast("Không có món mới để gửi");
         return;
@@ -1590,13 +1596,9 @@ function PosApp({ user, onLogout }) {
     if (cart.length === 0 && selectedTable.status !== "occupied") return;
     const tableId = selectedTable.id;
     const pos = selectedPosition;
-    // Capture cart trước khi clear
-    const pendingItems = cart.length > 0 ? cart.map((it) => ({
-      product_id: it.id, quantity: it.qty,
-      size_id: it.size?.id,
-      toppings: (it.toppings || []).map((t) => t.id),
-      note: it.notes || "",
-    })) : [];
+    // Capture delta món CHƯA gửi trước khi clear — gửi nguyên cart sẽ
+    // ghi trùng các món đã báo chế biến (server append vào đơn pending)
+    const pendingItems = computeNewItems(cart, initialCart);
     // Optimistic: đóng bàn ngay trên UI
     setShowCheckout(false);
     clearCart();
