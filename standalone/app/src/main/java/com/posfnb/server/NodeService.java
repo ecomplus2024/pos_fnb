@@ -116,7 +116,7 @@ public class NodeService extends Service {
         try {
             pb.redirectOutput(ProcessBuilder.Redirect.appendTo(log));
             process = pb.start();
-            log("node started pid=" + procPid(process));
+            log("node started");
         } catch (IOException e) {
             log("spawn failed: " + e);
             process = null;
@@ -127,10 +127,6 @@ public class NodeService extends Service {
             monitor.setDaemon(true);
             monitor.start();
         }
-    }
-
-    private long procPid(Process p) {
-        try { return p.pid(); } catch (Throwable t) { return -1; }
     }
 
     private void monitorLoop() {
