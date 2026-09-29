@@ -811,7 +811,7 @@ async function handleUpdateItemStatus(env, itemId, newStatus) {
   ).bind(itemId).first();
   if (!item) return json({ message: "Item not found" }, 404);
   await env.DB.prepare(`UPDATE order_items SET status = ? WHERE id = ?`).bind(newStatus, itemId).run();
-  return json({ message: "Status updated" });
+  return json({ message: "Status updated", itemId, status: newStatus });
 }
 
 async function handleKitchenBatchSync(env, changes) {

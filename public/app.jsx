@@ -3775,11 +3775,19 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
     const source = isEmbedded ? contextOrders : localOrders;
     if (!source) return [];
     const pending = pendingStatusRef.current;
+    const now = Date.now();
+    // TTL sweep: pending quá 10s chưa được server confirm → bỏ, hiện dữ liệu thật
+    for (const [pid, p] of pending) {
+      if (p.at && now - p.at > 10000) pending.delete(pid);
+    }
     return source.map((order) => ({
       ...order,
       items: order.items.map((it) => {
         const p = pending.get(it.id);
         if (!p) return it;
+        // Server đã xác nhận status/qty mới → xóa pending, dùng dữ liệu server
+        if (!p.deleted && p.status && it.status === p.status) { pending.delete(it.id); return it; }
+        if (!p.deleted && p.qty != null && it.quantity === p.qty) { pending.delete(it.id); return it; }
         if (p.deleted) return null;
         return { ...it, status: p.status ?? it.status, quantity: p.qty ?? it.quantity };
       }).filter(Boolean),
@@ -3949,7 +3957,7 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
     setItemActionLoading((prev) => ({ ...prev, [key]: true }));
     const now = Date.now();
     // Optimistic: pending chỉ sống trong lúc request bay — server là truth
-    pendingStatusRef.current.set(itemId, { status });
+    pendingStatusRef.current.set(itemId, { status, at: now });
     mutationCounter.current++;
     staleUntilRef.current = now + 800;
     syncStaleUntilRef.current = now + 800;
@@ -3961,17 +3969,30 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
         }))
       );
     }
+    let ok = false;
     try {
-      await authFetch(`/api/admin/order-items/${itemId}/status`, {
+      const resp = await authFetch(`/api/admin/order-items/${itemId}/status`, {
         method: "PUT",
         body: JSON.stringify({ status }),
       });
+      // Server trả lỗi (400/500) → đọc message hiện lên thay vì nuốt
+      if (!resp.ok) {
+        let detail = `HTTP ${resp.status}`;
+        try { const j = await resp.json(); detail = j.message || j.error || detail; } catch {}
+        alert(`Lỗi đổi trạng thái món: ${detail}`);
+        if (!isEmbedded) fetchOrders();
+      } else {
+        ok = true;
+      }
     } catch (err) {
       console.error("Status update error:", err);
+      alert("Lỗi kết nối server: " + err.message);
       // Lỗi → bỏ optimistic, refetch về đúng trạng thái server
       if (!isEmbedded) fetchOrders();
     } finally {
-      pendingStatusRef.current.delete(itemId);
+      // Thành công: giữ pending overlay cho tới khi poll/SSE xác nhận status mới
+      // (memo tự reconcile hoặc TTL 10s) — tránh UI nhảy về trạng thái cũ.
+      if (!ok) pendingStatusRef.current.delete(itemId);
       mutationCounter.current++;
       setItemActionLoading((prev) => ({ ...prev, [key]: false }));
     }
@@ -3984,7 +4005,7 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
     const newQty = item.quantity - 1;
     const now = Date.now();
     setItemActionLoading((prev) => ({ ...prev, [key]: true }));
-    pendingStatusRef.current.set(item.id, newQty <= 0 ? { deleted: true } : { qty: newQty });
+    pendingStatusRef.current.set(item.id, newQty <= 0 ? { deleted: true, at: now } : { qty: newQty, at: now });
     mutationCounter.current++;
     staleUntilRef.current = now + 800;
     syncStaleUntilRef.current = now + 800;
@@ -3998,20 +4019,28 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
         }))
       );
     }
+    let ok = false;
     try {
-      if (item.quantity <= 1) {
-        await authFetch(`/api/orders/${item.order_id}/items/${item.id}`, { method: "DELETE" });
+      const resp = item.quantity <= 1
+        ? await authFetch(`/api/orders/${item.order_id}/items/${item.id}`, { method: "DELETE" })
+        : await authFetch(`/api/orders/${item.order_id}/items/${item.id}`, {
+            method: "PUT",
+            body: JSON.stringify({ quantity: newQty }),
+          });
+      if (!resp.ok) {
+        let detail = `HTTP ${resp.status}`;
+        try { const j = await resp.json(); detail = j.message || j.error || detail; } catch {}
+        alert(`Lỗi giảm số lượng: ${detail}`);
+        if (!isEmbedded) fetchOrders();
       } else {
-        await authFetch(`/api/orders/${item.order_id}/items/${item.id}`, {
-          method: "PUT",
-          body: JSON.stringify({ quantity: newQty }),
-        });
+        ok = true;
       }
     } catch (err) {
       console.error("Reduce error:", err);
+      alert("Lỗi kết nối server: " + err.message);
       if (!isEmbedded) fetchOrders();
     } finally {
-      pendingStatusRef.current.delete(item.id);
+      if (!ok) pendingStatusRef.current.delete(item.id);
       mutationCounter.current++;
       setItemActionLoading((prev) => ({ ...prev, [key]: false }));
     }
@@ -4023,7 +4052,7 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
     if (itemActionLoading[key]) return;
     const now = Date.now();
     setItemActionLoading((prev) => ({ ...prev, [key]: true }));
-    pendingStatusRef.current.set(item.id, { deleted: true });
+    pendingStatusRef.current.set(item.id, { deleted: true, at: now });
     mutationCounter.current++;
     staleUntilRef.current = now + 800;
     syncStaleUntilRef.current = now + 800;
@@ -4035,13 +4064,23 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
         }))
       );
     }
+    let ok = false;
     try {
-      await authFetch(`/api/orders/${item.order_id}/items/${item.id}`, { method: "DELETE" });
+      const resp = await authFetch(`/api/orders/${item.order_id}/items/${item.id}`, { method: "DELETE" });
+      if (!resp.ok) {
+        let detail = `HTTP ${resp.status}`;
+        try { const j = await resp.json(); detail = j.message || j.error || detail; } catch {}
+        alert(`Lỗi hủy món: ${detail}`);
+        if (!isEmbedded) fetchOrders();
+      } else {
+        ok = true;
+      }
     } catch (err) {
       console.error("Cancel error:", err);
+      alert("Lỗi kết nối server: " + err.message);
       if (!isEmbedded) fetchOrders();
     } finally {
-      pendingStatusRef.current.delete(item.id);
+      if (!ok) pendingStatusRef.current.delete(item.id);
       mutationCounter.current++;
       setItemActionLoading((prev) => ({ ...prev, [key]: false }));
     }
