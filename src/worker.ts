@@ -582,6 +582,8 @@ async function handlePayTable(env, tableId, paymentMethod, tablePosition) {
   }
   if (!order) return json({ error: "Kh\xF4ng c\xF3 order pending cho b\xE0n n\xE0y" }, 404);
   await env.DB.prepare(`UPDATE orders SET status = 'completed', payment_method = ? WHERE id = ?`).bind(paymentMethod, order.id).run();
+  // Đóng luôn các item chưa xong — đơn đã thanh toán không còn hiện ở bếp/quầy
+  await env.DB.prepare(`UPDATE order_items SET status = 'completed' WHERE order_id = ? AND status != 'completed'`).bind(order.id).run();
   const remaining = await env.DB.prepare(
     `SELECT COUNT(*) as cnt FROM orders WHERE table_id = ? AND status = 'pending'`
   ).bind(tableId).first();
@@ -693,7 +695,7 @@ async function handleKitchenOrders(env, unit) {
      JOIN order_items oi ON oi.order_id = o.id
      LEFT JOIN products p ON p.id = oi.product_id
      LEFT JOIN tables t ON t.id = o.table_id
-     WHERE oi.status != 'completed'
+     WHERE oi.status != 'completed' AND o.status = 'pending'
        AND (p.production_unit = ? OR (oi.product_id IS NULL AND ? = 'kitchen'))
      ORDER BY o.created_at ASC`
   ).bind(unit, unit).all();
@@ -1429,6 +1431,7 @@ async function handleCashierTakeawayComplete(env, orderId, body) {
   } else {
     await env.DB.prepare(`UPDATE orders SET status = 'completed' WHERE id = ?`).bind(orderId).run();
   }
+  await env.DB.prepare(`UPDATE order_items SET status = 'completed' WHERE order_id = ? AND status != 'completed'`).bind(orderId).run();
   return json({ success: true, message: "\u0110\xE3 ho\xE0n th\xE0nh \u0111\u01A1n mang v\u1EC1" });
 }
 async function handleGetSettings(env) {
@@ -2094,6 +2097,7 @@ async function handlePayCashShipOrder(env, orderId) {
     return json({ message: "Don khong o trang thai cho xu ly" }, 400);
   }
   await env.DB.prepare(`UPDATE orders SET status = 'completed' WHERE id = ?`).bind(orderId).run();
+  await env.DB.prepare(`UPDATE order_items SET status = 'completed' WHERE order_id = ? AND status != 'completed'`).bind(orderId).run();
   return json({ message: "Da hoan tat don (tien mat)", order_id: orderId, status: "completed" });
 }
 async function handlePayTransferShipOrder(env, orderId) {
@@ -2116,6 +2120,7 @@ async function handleConfirmTransferShipOrder(env, orderId) {
     return json({ message: "Don khong o trang thai cho chuyen khoan" }, 400);
   }
   await env.DB.prepare(`UPDATE orders SET status = 'completed' WHERE id = ?`).bind(orderId).run();
+  await env.DB.prepare(`UPDATE order_items SET status = 'completed' WHERE order_id = ? AND status != 'completed'`).bind(orderId).run();
   return json({ message: "Da xac nhan nhan tien chuyen khoan", order_id: orderId, status: "completed" });
 }
 var VALID_PRODUCTION_UNITS = ["counter", "kitchen"];
@@ -2891,7 +2896,8 @@ var worker_default = {
           `SELECT COUNT(DISTINCT oi.order_id) AS cnt
            FROM order_items oi
            JOIN products p ON p.id = oi.product_id
-           WHERE oi.status != 'completed' AND p.production_unit = ?`
+           JOIN orders o ON o.id = oi.order_id
+           WHERE oi.status != 'completed' AND o.status = 'pending' AND p.production_unit = ?`
         ).bind(unit).first();
         return json({ count: countResult?.cnt ?? 0 });
       } catch (err) {
