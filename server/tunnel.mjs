@@ -35,13 +35,19 @@ async function setSetting(db, key, value) {
     .run();
 }
 
-async function cfApi(cfToken, method, p, body) {
+// auth = { token, email } — có email → Global API Key (X-Auth-Email/Key),
+// không có → API Token (Bearer). Global Key là chuỗi hex ở mục API Keys.
+async function cfApi(auth, method, p, body) {
+  const headers = { "Content-Type": "application/json" };
+  if (auth.email) {
+    headers["X-Auth-Email"] = auth.email;
+    headers["X-Auth-Key"] = auth.token;
+  } else {
+    headers["Authorization"] = `Bearer ${auth.token}`;
+  }
   const r = await fetch(CF_API + p, {
     method,
-    headers: {
-      Authorization: `Bearer ${cfToken}`,
-      "Content-Type": "application/json",
-    },
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
   const j = await r.json().catch(() => ({}));
@@ -109,9 +115,15 @@ function tunnelStatus(cfg) {
  */
 export async function tunnelApi(db, req, res, pathname, body, sendJson) {
   try {
+    // auth chung: token + email (email rỗng → Bearer token)
+    const auth = {
+      token: String(body?.token || "").trim(),
+      email: String(body?.email || "").trim(),
+    };
+
     // Danh sách domain (zones) trong tài khoản CF
     if (req.method === "POST" && pathname === "/api/admin/tunnel-domains") {
-      const zones = await cfApi(body.token, "GET", "/zones?per_page=50&status=active");
+      const zones = await cfApi(auth, "GET", "/zones?per_page=50&status=active");
       sendJson(res, { ok: true, zones: (zones || []).map((z) => ({ id: z.id, name: z.name })) });
       return true;
     }
@@ -123,33 +135,33 @@ export async function tunnelApi(db, req, res, pathname, body, sendJson) {
 
     // Tạo tunnel + ingress + DNS, lưu config, chạy cloudflared
     if (req.method === "POST" && pathname === "/api/admin/tunnel-setup") {
-      const { token, zone_name, subdomain } = body || {};
+      const { zone_name, subdomain } = body || {};
       let { zone_id } = body || {};
       const sub = String(subdomain || "").trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
-      if (!token || !zone_name || !sub) throw new Error("Thiếu token/domain/subdomain");
+      if (!auth.token || !zone_name || !sub) throw new Error("Thiếu token/domain/subdomain");
       const hostname = `${sub}.${zone_name}`;
       const tunnelName = `pos-${sub}`;
 
       // User nhập domain tay → resolve zone_id theo tên
       if (!zone_id) {
-        const zs = await cfApi(token, "GET", `/zones?name=${encodeURIComponent(zone_name)}&status=active`);
+        const zs = await cfApi(auth, "GET", `/zones?name=${encodeURIComponent(zone_name)}&status=active`);
         zone_id = zs?.[0]?.id;
         if (!zone_id) throw new Error(`Không thấy domain "${zone_name}" trong tài khoản`);
       }
 
-      const accounts = await cfApi(token, "GET", "/accounts?per_page=5");
+      const accounts = await cfApi(auth, "GET", "/accounts?per_page=5");
       const account_id = accounts?.[0]?.id;
       if (!account_id) throw new Error("Token không thấy account nào");
 
       // Reuse tunnel cùng tên nếu đã có (tránh tạo trùng khi setup lại)
       let tunnel_id = null;
       const existing = await cfApi(
-        token, "GET", `/accounts/${account_id}/cfd_tunnel?name=${tunnelName}&is_deleted=false`
+        auth, "GET", `/accounts/${account_id}/cfd_tunnel?name=${tunnelName}&is_deleted=false`
       );
       if (existing?.[0]?.id) {
         tunnel_id = existing[0].id;
       } else {
-        const created = await cfApi(token, "POST", `/accounts/${account_id}/cfd_tunnel`, {
+        const created = await cfApi(auth, "POST", `/accounts/${account_id}/cfd_tunnel`, {
           name: tunnelName,
           config_src: "cloudflare",
         });
@@ -157,7 +169,7 @@ export async function tunnelApi(db, req, res, pathname, body, sendJson) {
       }
 
       // Ingress: hostname → server local
-      await cfApi(token, "PUT", `/accounts/${account_id}/cfd_tunnel/${tunnel_id}/configurations`, {
+      await cfApi(auth, "PUT", `/accounts/${account_id}/cfd_tunnel/${tunnel_id}/configurations`, {
         config: {
           ingress: [
             { hostname, service: "http://localhost:8787" },
@@ -168,22 +180,22 @@ export async function tunnelApi(db, req, res, pathname, body, sendJson) {
 
       // DNS CNAME hostname → <tunnel_id>.cfargotunnel.com
       const cnameTarget = `${tunnel_id}.cfargotunnel.com`;
-      const recs = await cfApi(token, "GET", `/zones/${zone_id}/dns_records?name=${hostname}`);
+      const recs = await cfApi(auth, "GET", `/zones/${zone_id}/dns_records?name=${hostname}`);
       if (recs?.[0]?.id) {
-        await cfApi(token, "PUT", `/zones/${zone_id}/dns_records/${recs[0].id}`, {
+        await cfApi(auth, "PUT", `/zones/${zone_id}/dns_records/${recs[0].id}`, {
           type: "CNAME", name: hostname, content: cnameTarget, proxied: true,
         });
       } else {
-        await cfApi(token, "POST", `/zones/${zone_id}/dns_records`, {
+        await cfApi(auth, "POST", `/zones/${zone_id}/dns_records`, {
           type: "CNAME", name: hostname, content: cnameTarget, proxied: true,
         });
       }
 
       // Tunnel token để chạy cloudflared
-      const runToken = await cfApi(token, "GET", `/accounts/${account_id}/cfd_tunnel/${tunnel_id}/token`);
+      const runToken = await cfApi(auth, "GET", `/accounts/${account_id}/cfd_tunnel/${tunnel_id}/token`);
 
       await setSetting(db, "tunnel", {
-        enabled: true, cf_token: token, account_id, tunnel_id, hostname, token: runToken,
+        enabled: true, cf_token: auth.token, cf_email: auth.email, account_id, tunnel_id, hostname, token: runToken,
       });
       dbRef = db;
       stopping = false;
