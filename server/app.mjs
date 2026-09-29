@@ -355,6 +355,11 @@ http
         request.ctx = ctx;
       } catch {}
       const response = await worker.fetch(request, env, ctx);
+      // Log API lỗi vào pos.log để debug (client WebView không có console)
+      if (response.status >= 400 && pathname.startsWith("/api/")) {
+        const errBody = await response.clone().text();
+        console.error(`[api] ${req.method} ${pathname} -> ${response.status} ${errBody.slice(0, 300)}`);
+      }
       // Mutation thành công → báo cho mọi client SSE biết để refetch
       if (req.method !== "GET" && response.status >= 200 && response.status < 300) {
         broadcastChange(pathname);
