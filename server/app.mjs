@@ -24,6 +24,7 @@ import { createAssets } from "./assets.mjs";
 import { installCacheShim } from "./cache-shim.mjs";
 import { initDb } from "./migrations.mjs";
 import { startSyncLoop, syncNow, hubPing, getSyncStatus } from "./sync.mjs";
+import { tunnelApi, autoStartTunnel } from "./tunnel.mjs";
 
 installCacheShim();
 
@@ -101,6 +102,16 @@ const git = (args, timeout = 30000) =>
   }).trim();
 
 const exitSoon = () => setTimeout(() => process.exit(0), 600);
+
+const readJsonBody = (req) =>
+  new Promise((resolve) => {
+    let buf = "";
+    req.on("data", (c) => (buf += c));
+    req.on("end", () => {
+      try { resolve(JSON.parse(buf || "{}")); } catch { resolve({}); }
+    });
+    req.on("error", () => resolve({}));
+  });
 
 // --- Standalone APK: không có .git (code nằm trong assets, giải nén ra disk) ---
 // Update bằng tarball GitHub thay git pull.
@@ -292,6 +303,15 @@ http
       if (await handleAdminServer(req, res, pathname)) return;
     }
 
+    if (pathname.startsWith("/api/admin/tunnel-")) {
+      if (!(await requireAdmin(req))) {
+        sendJson(res, { message: "Chỉ admin" }, 401);
+        return;
+      }
+      const body = await readJsonBody(req);
+      if (await tunnelApi(db, req, res, pathname, body, sendJson)) return;
+    }
+
 
     // SSE endpoint — đặt trước worker (worker không biết route này)
     if (req.method === "GET" && pathname === "/api/events") {
@@ -356,3 +376,4 @@ http
 
 // Đồng bộ lên central hub (nếu đã cấu hình trong Admin → Hub)
 startSyncLoop(db);
+autoStartTunnel(db).catch((e) => console.error("[tunnel] autostart:", e.message));

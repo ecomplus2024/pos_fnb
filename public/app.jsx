@@ -6511,6 +6511,10 @@ function AdminPanel({ embedded = false, onExit }) {
   const [hubStatus, setHubStatus] = useState(null);
   const [hubMsg, setHubMsg] = useState(null);
   const [hubSaving, setHubSaving] = useState(false);
+  const [tun, setTun] = useState({ token: "", zones: [], zone_id: "", zone_name: "", subdomain: "" });
+  const [tunStatus, setTunStatus] = useState(null);
+  const [tunMsg, setTunMsg] = useState(null);
+  const [tunBusy, setTunBusy] = useState(false);
 
   useEffect(() => { fetchData(); }, [tab]);
 
@@ -6569,6 +6573,7 @@ function AdminPanel({ embedded = false, onExit }) {
           });
         }
         apiAuth("/api/admin/sync-status").then(setHubStatus).catch(() => setHubStatus(null));
+        apiAuth("/api/admin/tunnel-status").then(setTunStatus).catch(() => setTunStatus(null));
       }
     } catch (err) {
       showToast("Lỗi tải dữ liệu: " + err.message);
@@ -6682,6 +6687,50 @@ function AdminPanel({ embedded = false, onExit }) {
     } catch (e) {
       setHubMsg({ text: e.message || "Đồng bộ thất bại", error: true });
     }
+  };
+
+  // ---- Cloudflare Tunnel (public domain cho quán) ----
+  const loadTunZones = async () => {
+    setTunBusy(true); setTunMsg({ text: "Đang lấy danh sách domain...", error: false });
+    try {
+      const r = await apiAuth("/api/admin/tunnel-domains", {
+        method: "POST", body: JSON.stringify({ token: tun.token }),
+      });
+      setTun({ ...tun, zones: r.zones || [] });
+      setTunMsg(r.zones?.length
+        ? { text: `Tìm thấy ${r.zones.length} domain`, error: false }
+        : { text: "Token hợp lệ nhưng không có domain nào", error: true });
+    } catch (e) {
+      setTunMsg({ text: "Lỗi: " + (e.message || "không gọi được Cloudflare"), error: true });
+    } finally { setTunBusy(false); }
+  };
+
+  const setupTunnel = async () => {
+    setTunBusy(true); setTunMsg({ text: "Đang tạo tunnel + DNS...", error: false });
+    try {
+      const r = await apiAuth("/api/admin/tunnel-setup", {
+        method: "POST",
+        body: JSON.stringify({
+          token: tun.token, zone_id: tun.zone_id,
+          zone_name: tun.zone_name, subdomain: tun.subdomain,
+        }),
+      });
+      setTunStatus(r);
+      setTunMsg({ text: "Xong! POS online tại " + (r.url || ""), error: false });
+    } catch (e) {
+      setTunMsg({ text: "Lỗi: " + (e.message || "không tạo được"), error: true });
+    } finally { setTunBusy(false); }
+  };
+
+  const stopTunnel = async () => {
+    setTunBusy(true);
+    try {
+      const r = await apiAuth("/api/admin/tunnel-stop", { method: "POST" });
+      setTunStatus(r);
+      setTunMsg({ text: "Đã tắt tunnel", error: false });
+    } catch (e) {
+      setTunMsg({ text: e.message || "Lỗi", error: true });
+    } finally { setTunBusy(false); }
   };
 
   // ---- Products CRUD ----
@@ -7609,6 +7658,86 @@ function AdminPanel({ embedded = false, onExit }) {
                   <p className="text-xs text-gray-500">
                     Lần sync cuối: {new Date(hubStatus.at).toLocaleString("vi-VN")} — {hubStatus.detail}
                   </p>
+                )}
+              </div>
+            </div>
+
+            {/* Cloudflare Tunnel — POS ra Internet qua domain riêng */}
+            <div className="space-y-4">
+              <h3 className="text-xl font-black text-gray-800">Tên miền riêng (Cloudflare Tunnel)</h3>
+              <div className="p-6 bg-gray-50 rounded-2xl border border-gray-100 space-y-4">
+                <p className="text-sm text-gray-500">
+                  Mở POS ra Internet qua domain riêng (VD: <b>quan1.mybrand.vn</b>) — khách
+                  ngoài quán vẫn order được. Cần <b>CF API token</b> quyền
+                  <i> Account → Cloudflare Tunnel (Edit)</i> và <i>Zone → DNS (Edit)</i>.
+                </p>
+                {tunStatus?.configured && (
+                  <div className={`p-4 rounded-xl border ${tunStatus.running ? "bg-green-50 border-green-200" : "bg-amber-50 border-amber-200"}`}>
+                    <div className="font-black text-sm">
+                      {tunStatus.running ? "🟢 Đang chạy" : "🟡 Đã cấu hình, tunnel chưa chạy"}
+                    </div>
+                    <a href={tunStatus.url} target="_blank" rel="noreferrer"
+                      className="text-primary-600 font-bold break-all">{tunStatus.url}</a>
+                    {tunStatus.last_exit && (
+                      <p className="text-xs text-gray-500 mt-1">
+                        Lần thoát cuối: code {tunStatus.last_exit.code}
+                        {tunStatus.last_exit.error ? " — " + tunStatus.last_exit.error : ""}
+                      </p>
+                    )}
+                  </div>
+                )}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-black text-gray-500 uppercase tracking-widest">CF API token</label>
+                    <input type="password" value={tun.token} placeholder="eyJh..."
+                      onChange={(e) => setTun({ ...tun, token: e.target.value })}
+                      className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-black text-gray-500 uppercase tracking-widest">Domain</label>
+                    {tun.zones.length > 0 ? (
+                      <select value={tun.zone_id}
+                        onChange={(e) => {
+                          const z = tun.zones.find((x) => x.id === e.target.value);
+                          setTun({ ...tun, zone_id: e.target.value, zone_name: z?.name || "" });
+                        }}
+                        className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm">
+                        <option value="">-- chọn domain --</option>
+                        {tun.zones.map((z) => <option key={z.id} value={z.id}>{z.name}</option>)}
+                      </select>
+                    ) : (
+                      <input type="text" value={tun.zone_name} placeholder="mybrand.vn (bấm Tải domain trước)"
+                        onChange={(e) => setTun({ ...tun, zone_name: e.target.value })}
+                        className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
+                    )}
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-black text-gray-500 uppercase tracking-widest">Subdomain</label>
+                    <input type="text" value={tun.subdomain} placeholder="quan1"
+                      onChange={(e) => setTun({ ...tun, subdomain: e.target.value })}
+                      className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-3">
+                  <button onClick={loadTunZones} disabled={tunBusy || !tun.token}
+                    className="px-5 py-2.5 rounded-xl font-bold text-sm bg-blue-100 text-blue-700 hover:bg-blue-200 transition disabled:opacity-50">
+                    {tunBusy ? "Đang xử lý..." : "Tải domain"}
+                  </button>
+                  <button onClick={setupTunnel} disabled={tunBusy || !tun.token || !tun.zone_name || !tun.subdomain}
+                    className="px-5 py-2.5 rounded-xl font-bold text-sm bg-primary-600 text-white hover:bg-primary-700 shadow-lg transition disabled:opacity-50">
+                    {tunBusy ? "Đang tạo..." : "Bật tunnel"}
+                  </button>
+                  {tunStatus?.running && (
+                    <button onClick={stopTunnel} disabled={tunBusy}
+                      className="px-5 py-2.5 rounded-xl font-bold text-sm bg-red-100 text-red-700 hover:bg-red-200 transition disabled:opacity-50">
+                      Tắt tunnel
+                    </button>
+                  )}
+                </div>
+                {tunMsg && (
+                  <div className={`p-3 rounded-xl text-sm font-bold ${tunMsg.error ? "bg-red-50 text-red-700 border border-red-200" : "bg-green-50 text-green-700 border border-green-200"}`}>
+                    {tunMsg.text}
+                  </div>
                 )}
               </div>
             </div>

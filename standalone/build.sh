@@ -58,7 +58,7 @@ def deps_of(s):
     return out
 
 seen, order = set(), []
-queue = ['nodejs']
+queue = ['nodejs', 'cloudflared']
 while queue:
     p = queue.pop(0)
     if p in seen or p not in idx:
@@ -87,6 +87,11 @@ while read -r FILE; do
   if [ -f "$USR/bin/node" ]; then
     cp "$USR/bin/node" "$JNILIBS/libnode.so"
     chmod 755 "$JNILIBS/libnode.so"
+  fi
+  # cloudflared (Go static binary) → libcloudflared.so — Cloudflare Tunnel
+  if [ -f "$USR/bin/cloudflared" ]; then
+    cp "$USR/bin/cloudflared" "$JNILIBS/libcloudflared.so"
+    chmod 755 "$JNILIBS/libcloudflared.so"
   fi
   # gom mọi .so* top-level (kể cả symlink) vào /tmp/libsrc để xử lý tập trung
   if [ -d "$USR/lib" ]; then
@@ -158,6 +163,7 @@ PYEOF
 echo "    jniLibs:"
 ls -lhS "$JNILIBS" | head -15
 [ -f "$JNILIBS/libnode.so" ] || { echo "LỖI: không có libnode.so"; exit 1; }
+[ -f "$JNILIBS/libcloudflared.so" ] || echo "CẢNH BÁO: không có libcloudflared.so (tính năng tunnel sẽ không chạy)"
 
 # DT_NEEDED check — mọi soname phải có file cùng tên trong jniLibs
 READELF=$(find "$ANDROID_HOME/ndk" -name 'llvm-readelf*' -type f 2>/dev/null | head -1 || true)

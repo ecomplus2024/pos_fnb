@@ -1,0 +1,218 @@
+// ============================================================
+// tunnel.mjs — Cloudflare Tunnel chạy ngay trong app
+// Nhập CF API token → chọn domain + subdomain → tạo named tunnel,
+// trỏ DNS CNAME, spawn `cloudflared run --token ...` (binary nhúng
+// trong APK, path qua env CF_BIN). Config lưu ở settings key 'tunnel':
+//   { enabled, cf_token, account_id, tunnel_id, hostname }
+// ============================================================
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+
+const CF_API = "https://api.cloudflare.com/client/v4";
+const RESPAWN_MS = 15_000;
+
+let proc = null;
+let stopping = false;
+let lastExit = null; // { code, at }
+let logPath = null;
+
+const getLogPath = () =>
+  logPath || (logPath = path.join(process.env.HOME || process.env.POS_DATA_DIR || ".", "cloudflared.log"));
+
+async function getSetting(db, key) {
+  const row = await db.prepare("SELECT value FROM settings WHERE key = ?").bind(key).first();
+  if (!row) return null;
+  try { return JSON.parse(row.value); } catch { return row.value; }
+}
+
+async function setSetting(db, key, value) {
+  await db
+    .prepare(
+      "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    )
+    .bind(key, JSON.stringify(value))
+    .run();
+}
+
+async function cfApi(cfToken, method, p, body) {
+  const r = await fetch(CF_API + p, {
+    method,
+    headers: {
+      Authorization: `Bearer ${cfToken}`,
+      "Content-Type": "application/json",
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.success === false) {
+    const msg = (j.errors || []).map((e) => e.message || e.code).join("; ") || `HTTP ${r.status}`;
+    throw new Error(msg);
+  }
+  return j.result;
+}
+
+function startCloudflared(token) {
+  const bin = process.env.CF_BIN || "";
+  if (!bin || !fs.existsSync(bin)) {
+    lastExit = { code: -1, at: Date.now(), error: "Thiếu binary cloudflared (CF_BIN=" + bin + ")" };
+    console.error("[tunnel]", lastExit.error);
+    return false;
+  }
+  try { fs.chmodSync(bin, 0o755); } catch {}
+  const out = fs.createWriteStream(getLogPath(), { flags: "a" });
+  proc = spawn(bin, ["tunnel", "--no-autoupdate", "run", "--token", token], {
+    env: { ...process.env, TUNNEL_LOGLEVEL: "info" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  proc.stdout.pipe(out);
+  proc.stderr.pipe(out);
+  lastExit = null;
+  proc.on("exit", (code) => {
+    proc = null;
+    lastExit = { code, at: Date.now() };
+    out.end();
+    if (!stopping) setTimeout(respawnIfEnabled, RESPAWN_MS);
+  });
+  return true;
+}
+
+async function respawnIfEnabled() {
+  if (!dbRef || stopping) return;
+  const cfg = await getSetting(dbRef, "tunnel");
+  if (cfg?.enabled && cfg.token) startCloudflared(cfg.token);
+}
+
+let dbRef = null;
+
+/** Gọi khi server boot — tự chạy lại tunnel nếu trước đó đã bật. */
+export async function autoStartTunnel(db) {
+  dbRef = db;
+  const cfg = await getSetting(db, "tunnel");
+  if (cfg?.enabled && cfg.token) startCloudflared(cfg.token);
+}
+
+function tunnelStatus(cfg) {
+  return {
+    configured: !!cfg?.tunnel_id,
+    enabled: !!cfg?.enabled,
+    running: !!proc && proc.exitCode === null,
+    hostname: cfg?.hostname || null,
+    url: cfg?.hostname ? "https://" + cfg.hostname : null,
+    last_exit: lastExit,
+  };
+}
+
+/**
+ * API handlers — trả true nếu đã xử lý.
+ * body: object JSON đã parse sẵn (app.mjs đọc body trước khi gọi).
+ */
+export async function tunnelApi(db, req, res, pathname, body, sendJson) {
+  try {
+    // Danh sách domain (zones) trong tài khoản CF
+    if (req.method === "POST" && pathname === "/api/admin/tunnel-domains") {
+      const zones = await cfApi(body.token, "GET", "/zones?per_page=50&status=active");
+      sendJson(res, { ok: true, zones: (zones || []).map((z) => ({ id: z.id, name: z.name })) });
+      return true;
+    }
+
+    if (req.method === "GET" && pathname === "/api/admin/tunnel-status") {
+      sendJson(res, tunnelStatus(await getSetting(db, "tunnel")));
+      return true;
+    }
+
+    // Tạo tunnel + ingress + DNS, lưu config, chạy cloudflared
+    if (req.method === "POST" && pathname === "/api/admin/tunnel-setup") {
+      const { token, zone_name, subdomain } = body || {};
+      let { zone_id } = body || {};
+      const sub = String(subdomain || "").trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
+      if (!token || !zone_name || !sub) throw new Error("Thiếu token/domain/subdomain");
+      const hostname = `${sub}.${zone_name}`;
+      const tunnelName = `pos-${sub}`;
+
+      // User nhập domain tay → resolve zone_id theo tên
+      if (!zone_id) {
+        const zs = await cfApi(token, "GET", `/zones?name=${encodeURIComponent(zone_name)}&status=active`);
+        zone_id = zs?.[0]?.id;
+        if (!zone_id) throw new Error(`Không thấy domain "${zone_name}" trong tài khoản`);
+      }
+
+      const accounts = await cfApi(token, "GET", "/accounts?per_page=5");
+      const account_id = accounts?.[0]?.id;
+      if (!account_id) throw new Error("Token không thấy account nào");
+
+      // Reuse tunnel cùng tên nếu đã có (tránh tạo trùng khi setup lại)
+      let tunnel_id = null;
+      const existing = await cfApi(
+        token, "GET", `/accounts/${account_id}/cfd_tunnel?name=${tunnelName}&is_deleted=false`
+      );
+      if (existing?.[0]?.id) {
+        tunnel_id = existing[0].id;
+      } else {
+        const created = await cfApi(token, "POST", `/accounts/${account_id}/cfd_tunnel`, {
+          name: tunnelName,
+          config_src: "cloudflare",
+        });
+        tunnel_id = created.id;
+      }
+
+      // Ingress: hostname → server local
+      await cfApi(token, "PUT", `/accounts/${account_id}/cfd_tunnel/${tunnel_id}/configurations`, {
+        config: {
+          ingress: [
+            { hostname, service: "http://localhost:8787" },
+            { service: "http_status:404" },
+          ],
+        },
+      });
+
+      // DNS CNAME hostname → <tunnel_id>.cfargotunnel.com
+      const cnameTarget = `${tunnel_id}.cfargotunnel.com`;
+      const recs = await cfApi(token, "GET", `/zones/${zone_id}/dns_records?name=${hostname}`);
+      if (recs?.[0]?.id) {
+        await cfApi(token, "PUT", `/zones/${zone_id}/dns_records/${recs[0].id}`, {
+          type: "CNAME", name: hostname, content: cnameTarget, proxied: true,
+        });
+      } else {
+        await cfApi(token, "POST", `/zones/${zone_id}/dns_records`, {
+          type: "CNAME", name: hostname, content: cnameTarget, proxied: true,
+        });
+      }
+
+      // Tunnel token để chạy cloudflared
+      const runToken = await cfApi(token, "GET", `/accounts/${account_id}/cfd_tunnel/${tunnel_id}/token`);
+
+      await setSetting(db, "tunnel", {
+        enabled: true, cf_token: token, account_id, tunnel_id, hostname, token: runToken,
+      });
+      dbRef = db;
+      stopping = false;
+      const started = startCloudflared(runToken);
+      sendJson(res, { ok: true, started, ...tunnelStatus(await getSetting(db, "tunnel")) });
+      return true;
+    }
+
+    if (req.method === "POST" && pathname === "/api/admin/tunnel-stop") {
+      stopping = true;
+      const cfg = await getSetting(db, "tunnel");
+      if (cfg) await setSetting(db, "tunnel", { ...cfg, enabled: false });
+      if (proc) { try { proc.kill(); } catch {} proc = null; }
+      sendJson(res, { ok: true, ...tunnelStatus(await getSetting(db, "tunnel")) });
+      return true;
+    }
+
+    if (req.method === "POST" && pathname === "/api/admin/tunnel-start") {
+      const cfg = await getSetting(db, "tunnel");
+      if (!cfg?.token) throw new Error("Chưa cấu hình tunnel");
+      stopping = false;
+      await setSetting(db, "tunnel", { ...cfg, enabled: true });
+      const started = proc || startCloudflared(cfg.token);
+      sendJson(res, { ok: true, started: !!started, ...tunnelStatus(await getSetting(db, "tunnel")) });
+      return true;
+    }
+  } catch (err) {
+    sendJson(res, { ok: false, error: String(err.message || err) }, 500);
+    return true;
+  }
+  return false;
+}

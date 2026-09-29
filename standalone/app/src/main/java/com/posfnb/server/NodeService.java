@@ -107,6 +107,7 @@ public class NodeService extends Service {
         env.put("TMPDIR", getCacheDir().getAbsolutePath());
         env.put("LD_LIBRARY_PATH", libDir.getAbsolutePath());
         env.put("PATH", libDir.getAbsolutePath() + ":/system/bin:/system/xbin");
+        env.put("CF_BIN", new File(libDir, "libcloudflared.so").getAbsolutePath());
         env.put("POS_DATA_DIR", new File(home, "data").getAbsolutePath());
         env.put("PORT", "8787");
         env.put("HOST", "0.0.0.0");
