@@ -121,14 +121,14 @@ du -sh "$ASSETS/pos"
 
 echo "==> [4/6] Gradle assembleRelease"
 cd "$SA"
-if ! command -v gradle >/dev/null 2>&1; then
+# Pin Gradle 8.7 — AGP 8.2.2 không tương thích Gradle 9 (runner mặc định 9.x)
+if [ ! -x /opt/gradle-8.7/bin/gradle ]; then
   echo "    tải gradle 8.7..."
   curl -fsSL https://services.gradle.org/distributions/gradle-8.7-bin.zip -o /tmp/gradle.zip
   unzip -q /tmp/gradle.zip -d /opt
-  export PATH="/opt/gradle-8.7/bin:$PATH"
 fi
-gradle --version | head -4
-TERMUX_PACKAGE_VARIANT="" gradle assembleRelease --no-daemon --stacktrace -q
+/opt/gradle-8.7/bin/gradle --version | grep -E "Gradle|JVM"
+/opt/gradle-8.7/bin/gradle assembleRelease --no-daemon --stacktrace -q
 ls -lh app/build/outputs/apk/release/
 cd ..
 
