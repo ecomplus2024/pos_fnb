@@ -30,6 +30,7 @@ export async function initDb(db, { schemaPath }) {
     console.log("[db] Initialized from schema.sql");
   }
   await migrate(db);
+  await normalizeNfc(db);
   await seedAdmin(db);
 }
 
@@ -79,6 +80,66 @@ async function migrate(db) {
     BEGIN
       UPDATE orders SET updated_at = datetime('now') WHERE id = NEW.id;
     END`);
+}
+
+/**
+ * Chuẩn hóa text tiếng Việt về NFC (gộp dấu).
+ * Data nhập từ iOS/Mac hoặc sync về hay ở dạng NFD (base + combining mark)
+ * → font thiếu combining circumflex U+0302 render lỗi đúng các chữ có dấu mũ.
+ * Idempotent — chạy mỗi boot, chỉ UPDATE row nào khác sau normalize.
+ */
+const NFC_COLUMNS = [
+  ["categories", "name"],
+  ["products", "name"],
+  ["product_sizes", "name"],
+  ["tables", "name"],
+  ["orders", "customer_name"],
+  ["orders", "ship_address"],
+  ["orders", "ship_notes"],
+  ["order_items", "product_name"],
+  ["order_items", "note"],
+  ["order_items", "size_name"],
+  ["users", "full_name"],
+  ["order_item_change_logs", "product_name"],
+  ["order_item_change_logs", "table_name"],
+  ["hub_stores", "name"],
+  ["hub_orders", "table_name"],
+  ["hub_orders", "items_json"],
+  ["hub_products", "name"],
+  ["hub_products", "category"],
+  ["hub_products", "sizes_json"],
+  ["hub_categories", "name"],
+  ["hub_tables", "name"],
+];
+
+async function normalizeNfc(db) {
+  let fixed = 0;
+  for (const [table, col] of NFC_COLUMNS) {
+    const cols = await columnNames(db, table);
+    if (!cols.includes(col)) continue;
+    const { results } = await db
+      .prepare(`SELECT id, ${col} AS v FROM ${table} WHERE ${col} IS NOT NULL`)
+      .all();
+    const upd = db.prepare(`UPDATE ${table} SET ${col} = ? WHERE id = ?`);
+    for (const row of results) {
+      const n = String(row.v).normalize("NFC");
+      if (n !== row.v) {
+        await upd.bind(n, row.id).run();
+        fixed++;
+      }
+    }
+  }
+  // settings không có cột id — normalize value theo key
+  const { results: sRows } = await db.prepare("SELECT key, value FROM settings").all();
+  const sUpd = db.prepare("UPDATE settings SET value = ? WHERE key = ?");
+  for (const row of sRows) {
+    const n = String(row.value).normalize("NFC");
+    if (n !== row.value) {
+      await sUpd.bind(n, row.key).run();
+      fixed++;
+    }
+  }
+  if (fixed) console.log(`[db] Normalized ${fixed} text value(s) → NFC`);
 }
 
 /** Tạo user admin mặc định nếu chưa có user nào */

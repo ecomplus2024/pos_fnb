@@ -10,7 +10,13 @@
 import { DatabaseSync } from "node:sqlite";
 
 // D1 bind không nhận undefined/boolean — coerce phòng thủ
-const coerce = (v) => (v === undefined ? null : typeof v === "boolean" ? (v ? 1 : 0) : v);
+// String → NFC: data tiếng Việt tách dấu (NFD, từ iOS/Mac/sync) làm lỗi
+// hiển thị chữ có dấu mũ trên font thiếu combining mark — gộp dấu khi ghi.
+const coerce = (v) =>
+  v === undefined ? null
+  : typeof v === "boolean" ? (v ? 1 : 0)
+  : typeof v === "string" ? v.normalize("NFC")
+  : v;
 
 // Statement "có trả rows" (SELECT/PRAGMA/... hoặc mọi lệnh có RETURNING)
 const isRead = (sql) =>
