@@ -74,8 +74,7 @@ print('resolved debs:', ', '.join(order))
 PYEOF
 
 echo "==> [2/6] Tải debs + extract libs → jniLibs"
-mkdir -p "$JNILIBS" /tmp/debs
-set -x
+mkdir -p "$JNILIBS" /tmp/debs /tmp/libsrc
 while read -r FILE; do
   [ -z "$FILE" ] && continue
   DEB="/tmp/debs/$(basename "$FILE")"
@@ -89,16 +88,65 @@ while read -r FILE; do
     cp "$USR/bin/node" "$JNILIBS/libnode.so"
     chmod 755 "$JNILIBS/libnode.so"
   fi
-  # mọi shared lib (resolve symlink → file thật giữ nguyên soname)
+  # gom mọi .so* top-level (kể cả symlink) vào /tmp/libsrc để xử lý tập trung
   if [ -d "$USR/lib" ]; then
-    find "$USR/lib" -type f -name '*.so*' | while read -r so; do
-      base=$(basename "$so")
-      cp -L "$so" "$JNILIBS/$base" < /dev/null
-    done
+    find "$USR/lib" -maxdepth 1 -name '*.so*' \( -type f -o -type l \) \
+      -exec cp -a {} /tmp/libsrc/ \;
   fi
   echo "    done $FILE"
 done < /tmp/debs.txt
-set +x
+
+# AGP chỉ đóng gói jniLibs khớp `lib*.so` — soname dạng libfoo.so.N bị loại.
+# Rename sang libfoo_so_N.so + patchelf --replace-needed trên mọi binary.
+command -v patchelf >/dev/null || sudo apt-get install -y patchelf >/dev/null
+export JNILIBS_DIR="$JNILIBS"
+python3 - <<'PYEOF'
+import os, re, shutil, subprocess, sys
+
+SRC = '/tmp/libsrc'
+OUT = os.environ.get('JNILIBS_DIR', 'standalone/app/src/main/jniLibs/arm64-v8a')
+
+def safe(n):
+    if re.match(r'^lib.*\.so$', n):
+        return n
+    core = n[3:] if n.startswith('lib') else n
+    return 'lib' + re.sub(r'[^A-Za-z0-9_]', '_', core) + '.so'
+
+# name → real file; build rename map cho mọi soname đã biết
+real = {}   # real path -> display name của real file
+alias = {}  # soname (file/symlink name) -> real display name
+for name in sorted(os.listdir(SRC)):
+    p = os.path.join(SRC, name)
+    target = os.path.realpath(p)
+    if os.path.islink(p):
+        alias[name] = os.path.basename(target)
+    else:
+        real[target] = name
+        alias[name] = name
+
+# copy real file một lần, tên = safe(name của real file)
+soname_map = {}  # soname ai đó cần -> tên file cuối trong jniLibs
+for path, name in real.items():
+    safe_name = safe(name)
+    shutil.copy2(path, os.path.join(OUT, safe_name))
+    soname_map[name] = safe_name
+for name, tgt in alias.items():
+    if tgt in soname_map:
+        soname_map[name] = soname_map[tgt]
+
+# bản đồ cần patch: soname gốc -> tên file mới (chỉ cái đổi tên)
+patches = {k: v for k, v in soname_map.items() if k != v}
+print('rename map:', patches)
+
+# patchelf --replace-needed trên libnode.so + mọi .so
+targets = [os.path.join(OUT, 'libnode.so')] + [
+    os.path.join(OUT, f) for f in os.listdir(OUT) if f.endswith('.so')]
+for t in targets:
+    for old, new in patches.items():
+        subprocess.run(['patchelf', '--replace-needed', old, new, t],
+                       capture_output=True)
+print('patched', len(targets), 'binaries')
+PYEOF
 
 echo "    jniLibs:"
 ls -lhS "$JNILIBS" | head -15
