@@ -6402,7 +6402,7 @@ function AdminPanel({ embedded = false, onExit }) {
   const qrContainerRef = useRef(null);
   useEffect(() => {
     if (!qrTable || !qrContainerRef.current || typeof window.qrcode === "undefined") return;
-    const url = `${window.location.origin}/menu/${qrTable.id}`;
+    const url = `${window.location.origin}/menu/table/${qrTable.id}`;
     const qr = window.qrcode(0, "M");
     qr.addData(url);
     qr.make();
@@ -6412,7 +6412,7 @@ function AdminPanel({ embedded = false, onExit }) {
   }, [qrTable]);
   const downloadQR = useCallback((table) => {
     if (typeof window.qrcode === "undefined") return;
-    const url = `${window.location.origin}/menu/${table.id}`;
+    const url = `${window.location.origin}/menu/table/${table.id}`;
     const qr = window.qrcode(0, "M");
     qr.addData(url);
     qr.make();
@@ -6480,7 +6480,7 @@ function AdminPanel({ embedded = false, onExit }) {
         const qr = window.qrcode(0, "M");
         const qrUrl = table._isTakeaway
           ? `${window.location.origin}/takeaway`
-          : `${window.location.origin}/menu/${table.id}`;
+          : `${window.location.origin}/menu/table/${table.id}`;
         qr.addData(qrUrl);
         qr.make();
         const moduleCount = qr.getModuleCount();
@@ -8167,7 +8167,7 @@ function AdminPanel({ embedded = false, onExit }) {
             </div>
             <div className="p-6 flex flex-col items-center gap-4">
               <div ref={qrContainerRef} className="w-56 h-56 flex items-center justify-center bg-white border border-gray-100 rounded-2xl shadow-inner p-2"></div>
-              <p className="text-xs text-gray-500 font-bold text-center break-all px-2">{window.location.origin}/menu/{qrTable.id}</p>
+              <p className="text-xs text-gray-500 font-bold text-center break-all px-2">{window.location.origin}/menu/table/{qrTable.id}</p>
               <p className="text-[10px] text-gray-400 font-bold text-center">Khách quét mã QR này để gọi món tại {qrTable.name}</p>
             </div>
             <div className="p-6 bg-gray-50 border-t flex space-x-3">
@@ -8297,7 +8297,7 @@ function App() {
   // Init: check URL path
   useEffect(() => {
     const kitchenMatch = window.location.pathname.match(/^\/(kitchen|counter)$/);
-    const menuMatch = window.location.pathname.match(/^\/menu\/(\d+)/);
+    const menuMatch = window.location.pathname.match(/^\/menu\/(?:table\/)?(\d+)/);
     const takeawayMatch = window.location.pathname === "/takeaway";
     const shipMatch = window.location.pathname === "/ship";
     const shipperMatch = window.location.pathname === "/shipper";
@@ -8348,7 +8348,7 @@ function App() {
   }
 
   if (mode === "public") {
-    const m = window.location.pathname.match(/^\/menu\/(\d+)/);
+    const m = window.location.pathname.match(/^\/menu\/(?:table\/)?(\d+)/);
     return <PublicMenuView tableId={parseInt(m[1], 10)} onLogout={() => {}} />;
   }
 
