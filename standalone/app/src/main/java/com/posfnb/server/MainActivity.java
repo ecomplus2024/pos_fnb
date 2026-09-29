@@ -245,10 +245,15 @@ public class MainActivity extends Activity {
         box.setOrientation(LinearLayout.VERTICAL);
         box.setGravity(Gravity.CENTER);
         box.setBackgroundColor(Color.WHITE);
+        android.widget.ScrollView sv = new android.widget.ScrollView(this);
         TextView tv = new TextView(this);
-        tv.setText(msg + "\n\nLog: xem Admin → Server logs");
-        tv.setGravity(Gravity.CENTER);
+        tv.setText(msg + "\n\n--- pos-watchdog.log ---\n"
+            + readTail(new File(getFilesDir(), "pos-watchdog.log"), 30)
+            + "\n--- pos.log ---\n"
+            + readTail(new File(getFilesDir(), "pos.log"), 40));
+        tv.setTextIsSelectable(true);
         tv.setPadding(48, 24, 48, 24);
+        sv.addView(tv);
         Button btn = new Button(this);
         btn.setText("Khởi động lại");
         btn.setOnClickListener(v -> {
@@ -259,9 +264,25 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         lp.gravity = Gravity.CENTER;
-        box.addView(tv);
+        box.addView(sv, new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
         box.addView(btn, lp);
         setContentView(box);
+    }
+
+    private static String readTail(File f, int maxLines) {
+        try {
+            byte[] b = new byte[(int) Math.min(f.length(), 32768)];
+            java.io.FileInputStream in = new java.io.FileInputStream(f);
+            long skip = f.length() - b.length;
+            if (skip > 0) in.skip(skip);
+            int n = in.read(b); in.close();
+            String[] lines = new String(b, 0, Math.max(0, n)).split("\n");
+            StringBuilder sb = new StringBuilder();
+            for (int i = Math.max(0, lines.length - maxLines); i < lines.length; i++)
+                sb.append(lines[i]).append('\n');
+            return sb.toString();
+        } catch (Exception e) { return "(no log)"; }
     }
 
     private int readInt(File f) {

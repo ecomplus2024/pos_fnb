@@ -161,7 +161,7 @@ fi
 
 echo "==> [3/6] Copy code POS → assets"
 mkdir -p "$ASSETS/pos"
-cp -r pos_fnb/server pos_fnb/public pos_fnb/schema.sql pos_fnb/package.json "$ASSETS/pos/"
+cp -r pos_fnb/server pos_fnb/src pos_fnb/public pos_fnb/schema.sql pos_fnb/package.json "$ASSETS/pos/"
 rm -rf "$ASSETS/pos/server/node_modules" "$ASSETS/pos/data" 2>/dev/null || true
 cp pos_fnb/apk/update_url.txt "$ASSETS/update_url.txt"
 sed -i 's|/version.json|/version-standalone.json|' "$ASSETS/update_url.txt"
