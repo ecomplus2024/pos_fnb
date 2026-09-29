@@ -6569,6 +6569,14 @@ function AdminPanel({ embedded = false, onExit }) {
   const [tunStatus, setTunStatus] = useState(null);
   const [tunMsg, setTunMsg] = useState(null);
   const [tunBusy, setTunBusy] = useState(false);
+  // Kiểm tra font tiếng Việt đã load chưa (test glyph "ầ" = dấu mũ + nặng)
+  const [fontOk, setFontOk] = useState(null);
+  useEffect(() => {
+    if (!document.fonts) { setFontOk(false); return; }
+    document.fonts.ready.then(() =>
+      setFontOk(document.fonts.check('16px "Be Vietnam Pro"', "\u1ea7"))
+    );
+  }, []);
 
   useEffect(() => { fetchData(); }, [tab]);
 
@@ -7606,7 +7614,9 @@ function AdminPanel({ embedded = false, onExit }) {
                       ? `${serverInfo.commit} (${serverInfo.branch}) — ${serverInfo.message}`
                       : "Không lấy được — chỉ hỗ trợ trên server local Node (server/server.mjs)"}
                   </p>
-                  <p className="text-xs text-gray-400 font-mono mt-1">UI build: {APP_BUILD}</p>
+                  <p className="text-xs text-gray-400 font-mono mt-1">
+                    UI build: {APP_BUILD} · Font: {fontOk === null ? "…" : fontOk ? "Be Vietnam Pro OK" : "KHÔNG load được"}
+                  </p>
                 </div>
                 <div className="flex flex-wrap gap-3">
                   <button
