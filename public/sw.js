@@ -1,5 +1,5 @@
 // public/sw.js - PWA Service Worker cho POS
-const CACHE_NAME = 'pos-v4';
+const CACHE_NAME = 'pos-v5';
 
 // Precache list — chỉ static files không thay đổi (JS/CSS/HTML dùng network-first)
 const PRECACHE_URLS = [
@@ -88,8 +88,9 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Static files (JS/CSS/HTML) — network-first (always fetch fresh, fallback to cache offline)
-  if (url.pathname.endsWith('.js') || url.pathname.endsWith('.css') || url.pathname.endsWith('.html') || url.pathname === '/') {
+  // Static files (JS/JSX/CSS/HTML) — network-first (always fetch fresh, fallback to cache offline)
+  // .jsx PHẢI ở đây — nếu rơi xuống cache-first bên dưới, app.jsx cũ sẽ sống mãi trong cache
+  if (url.pathname.endsWith('.js') || url.pathname.endsWith('.jsx') || url.pathname.endsWith('.css') || url.pathname.endsWith('.html') || url.pathname === '/') {
     event.respondWith(
       fetch(request).then(networkResponse => {
         if (networkResponse.ok) {
