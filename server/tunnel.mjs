@@ -135,68 +135,91 @@ export async function tunnelApi(db, req, res, pathname, body, sendJson) {
 
     // Tạo tunnel + ingress + DNS, lưu config, chạy cloudflared
     if (req.method === "POST" && pathname === "/api/admin/tunnel-setup") {
-      const { zone_name, subdomain } = body || {};
+      const { subdomain } = body || {};
       let { zone_id } = body || {};
+      const zone_name = String(body.zone_name || "").trim().toLowerCase();
       const sub = String(subdomain || "").trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
       if (!auth.token || !zone_name || !sub) throw new Error("Thiếu token/domain/subdomain");
       const hostname = `${sub}.${zone_name}`;
       const tunnelName = `pos-${sub}`;
 
+      // Bọc từng bước để lỗi tự nói rõ chết ở đâu
+      const step = async (label, fn) => {
+        try { return await fn(); }
+        catch (e) { throw new Error(`[${label}] ${e.message || e}`); }
+      };
+
       // User nhập domain tay → resolve zone_id theo tên
       if (!zone_id) {
-        const zs = await cfApi(auth, "GET", `/zones?name=${encodeURIComponent(zone_name)}&status=active`);
-        zone_id = zs?.[0]?.id;
-        if (!zone_id) throw new Error(`Không thấy domain "${zone_name}" trong tài khoản`);
+        zone_id = await step("tìm zone", async () => {
+          const zs = await cfApi(auth, "GET", `/zones?name=${encodeURIComponent(zone_name)}&status=active`);
+          const id = zs?.[0]?.id;
+          if (!id) throw new Error(`không thấy domain "${zone_name}" trong tài khoản`);
+          return id;
+        });
       }
 
       // Account ID: user nhập tay (trang domain → Overview) hoặc tự lấy account đầu
       let account_id = String(body.account_id || "").trim();
       if (!account_id) {
-        const accounts = await cfApi(auth, "GET", "/accounts?per_page=5");
-        account_id = accounts?.[0]?.id;
-        if (!account_id) throw new Error("Token không thấy account nào — nhập Account ID tay");
+        account_id = await step("lấy account", async () => {
+          const accounts = await cfApi(auth, "GET", "/accounts?per_page=5");
+          const id = accounts?.[0]?.id;
+          if (!id) throw new Error("token không thấy account — nhập Account ID tay");
+          return id;
+        });
       }
 
       // Reuse tunnel cùng tên nếu đã có (tránh tạo trùng khi setup lại)
-      let tunnel_id = null;
-      const existing = await cfApi(
-        auth, "GET", `/accounts/${account_id}/cfd_tunnel?name=${tunnelName}&is_deleted=false`
-      );
-      if (existing?.[0]?.id) {
-        tunnel_id = existing[0].id;
-      } else {
+      const tunnel_id = await step("tạo tunnel", async () => {
+        const existing = await cfApi(
+          auth, "GET", `/accounts/${account_id}/cfd_tunnel?name=${tunnelName}&is_deleted=false`
+        );
+        if (existing?.[0]?.id) return existing[0].id;
         const created = await cfApi(auth, "POST", `/accounts/${account_id}/cfd_tunnel`, {
           name: tunnelName,
           config_src: "cloudflare",
         });
-        tunnel_id = created.id;
-      }
-
-      // Ingress: hostname → server local
-      await cfApi(auth, "PUT", `/accounts/${account_id}/cfd_tunnel/${tunnel_id}/configurations`, {
-        config: {
-          ingress: [
-            { hostname, service: "http://localhost:8787" },
-            { service: "http_status:404" },
-          ],
-        },
+        return created.id;
       });
 
+      // Ingress: hostname → server local
+      await step("cấu hình ingress", () =>
+        cfApi(auth, "PUT", `/accounts/${account_id}/cfd_tunnel/${tunnel_id}/configurations`, {
+          config: {
+            ingress: [
+              { hostname, service: "http://localhost:8787" },
+              { service: "http_status:404" },
+            ],
+          },
+        })
+      );
+
       // DNS CNAME hostname → <tunnel_id>.cfargotunnel.com
-      const cnameTarget = `${tunnel_id}.cfargotunnel.com`;
-      const recs = await cfApi(auth, "GET", `/zones/${zone_id}/dns_records?name=${hostname}`);
-      if (recs?.[0]?.id) {
-        await cfApi(auth, "PUT", `/zones/${zone_id}/dns_records/${recs[0].id}`, {
-          type: "CNAME", name: hostname, content: cnameTarget, proxied: true,
-        });
-      } else {
-        await cfApi(auth, "POST", `/zones/${zone_id}/dns_records`, {
-          type: "CNAME", name: hostname, content: cnameTarget, proxied: true,
-        });
-      }
+      await step("tạo DNS record", async () => {
+        const cnameTarget = `${tunnel_id}.cfargotunnel.com`;
+        const recs = await cfApi(auth, "GET", `/zones/${zone_id}/dns_records?name=${hostname}`);
+        const rec = recs?.[0];
+        // Record tồn tại nhưng sai type (VD A record cũ) → xóa rồi tạo CNAME mới
+        if (rec?.id && rec.type !== "CNAME") {
+          await cfApi(auth, "DELETE", `/zones/${zone_id}/dns_records/${rec.id}`);
+          rec.id = null;
+        }
+        if (rec?.id) {
+          await cfApi(auth, "PUT", `/zones/${zone_id}/dns_records/${rec.id}`, {
+            type: "CNAME", name: hostname, content: cnameTarget, proxied: true,
+          });
+        } else {
+          await cfApi(auth, "POST", `/zones/${zone_id}/dns_records`, {
+            type: "CNAME", name: hostname, content: cnameTarget, proxied: true,
+          });
+        }
+      });
 
       // Tunnel token để chạy cloudflared
-      const runToken = await cfApi(auth, "GET", `/accounts/${account_id}/cfd_tunnel/${tunnel_id}/token`);
+      const runToken = await step("lấy tunnel token", () =>
+        cfApi(auth, "GET", `/accounts/${account_id}/cfd_tunnel/${tunnel_id}/token`)
+      );
 
       await setSetting(db, "tunnel", {
         enabled: true, cf_token: auth.token, cf_email: auth.email, account_id, tunnel_id, hostname, token: runToken,
