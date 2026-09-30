@@ -6581,10 +6581,11 @@ function AdminPanel({ embedded = false, onExit }) {
   const [serverLogs, setServerLogs] = useState(null); // { pos_log, watchdog_log }
   const [logsLoading, setLogsLoading] = useState(false);
   // ---- Hub sync state (đồng bộ lên trung tâm cho chuỗi quán)
-  const [hub, setHub] = useState({ enabled: false, url: "", store_id: "", api_key: "", api_key_masked: "" });
+  const [hub, setHub] = useState({ enabled: false, mode: "d1", url: "", store_id: "", db_name: "pos-free", api_key: "", api_key_masked: "", cf_token_masked: "", cf_account_id: "" });
   const [hubStatus, setHubStatus] = useState(null);
   const [hubMsg, setHubMsg] = useState(null);
   const [hubSaving, setHubSaving] = useState(false);
+  const [hubCf, setHubCf] = useState({ token: "", email: "", account_id: "" });
   const [tun, setTun] = useState({ token: "", email: "", account_id: "", zones: [], zone_id: "", zone_name: "", subdomain: "" });
   const [tunStatus, setTunStatus] = useState(null);
   const [tunMsg, setTunMsg] = useState(null);
@@ -6653,10 +6654,14 @@ function AdminPanel({ embedded = false, onExit }) {
         if (adminSettings?.hub) {
           setHub({
             enabled: !!adminSettings.hub.enabled,
+            mode: adminSettings.hub.mode || "d1",
             url: adminSettings.hub.url || "",
             store_id: adminSettings.hub.store_id || "",
+            db_name: adminSettings.hub.db_name || "pos-free",
             api_key: "",
             api_key_masked: adminSettings.hub.api_key_masked || "",
+            cf_token_masked: adminSettings.hub.cf_token_masked || "",
+            cf_account_id: adminSettings.hub.cf_account_id || "",
           });
         }
         apiAuth("/api/admin/sync-status").then(setHubStatus).catch(() => setHubStatus(null));
@@ -6742,9 +6747,13 @@ function AdminPanel({ embedded = false, onExit }) {
     setHubSaving(true);
     setHubMsg(null);
     try {
-      const body = { hub: { enabled: hub.enabled, url: hub.url, store_id: hub.store_id } };
+      const body = { hub: { enabled: hub.enabled, mode: hub.mode, url: hub.url, store_id: hub.store_id, db_name: hub.db_name } };
       if (hub.api_key) body.hub.api_key = hub.api_key;
+      if (hubCf.token || hubCf.email || hubCf.account_id) {
+        body.cf = { token: hubCf.token, email: hubCf.email, account_id: hubCf.account_id };
+      }
       await apiAuth("/api/admin/settings", { method: "PUT", body: JSON.stringify(body) });
+      setHubCf({ token: "", email: "", account_id: "" });
       setHubMsg({ text: "Đã lưu cấu hình hub", error: false });
     } catch (e) {
       setHubMsg({ text: e.message || "Lưu thất bại", error: true });
@@ -6757,7 +6766,7 @@ function AdminPanel({ embedded = false, onExit }) {
     setHubMsg({ text: "Đang kiểm tra kết nối hub...", error: false });
     try {
       const r = await apiAuth("/api/admin/sync-test", { method: "POST" });
-      setHubMsg(r.ok ? { text: `Kết nối OK — quán "${r.name || r.store_id}"`, error: false }
+      setHubMsg(r.ok ? { text: `Kết nối OK — ${r.detail || r.name || r.store_id || ""}`, error: false }
                      : { text: "Kết nối thất bại: " + (r.detail || ""), error: true });
     } catch (e) {
       setHubMsg({ text: e.message || "Không kết nối được", error: true });
@@ -7803,8 +7812,8 @@ function AdminPanel({ embedded = false, onExit }) {
               <h3 className="text-xl font-black text-gray-800">Đồng bộ trung tâm (chuỗi quán)</h3>
               <div className="p-6 bg-gray-50 rounded-2xl border border-gray-100 space-y-4">
                 <p className="text-sm text-gray-500">
-                  Đẩy đơn hàng + thực đơn + bàn lên máy chủ trung tâm. Mỗi quán cần
-                  <b> Mã quán</b> và <b>Hub key</b> do trung tâm cấp (Admin → POST /api/hub/stores).
+                  Đẩy đơn hàng + thực đơn + chấm công lên <b>D1 trên Cloudflare</b> mỗi 60 giây.
+                  Mỗi quán cần <b>Mã quán</b> riêng — hệ thống tự kiểm tra không cho 2 máy dùng trùng mã.
                 </p>
                 <label className="flex items-center gap-3 font-bold text-gray-700">
                   <input type="checkbox" checked={hub.enabled}
@@ -7812,28 +7821,81 @@ function AdminPanel({ embedded = false, onExit }) {
                     className="w-5 h-5 accent-primary-600" />
                   Bật đồng bộ
                 </label>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => setHub({ ...hub, mode: "d1" })}
+                    className={`px-4 py-2 rounded-xl text-sm font-bold border ${hub.mode !== "worker" ? "bg-primary-600 text-white border-primary-600" : "bg-white text-gray-600 border-gray-200"}`}>
+                    D1 trực tiếp (khuyên dùng)
+                  </button>
+                  <button type="button" onClick={() => setHub({ ...hub, mode: "worker" })}
+                    className={`px-4 py-2 rounded-xl text-sm font-bold border ${hub.mode === "worker" ? "bg-primary-600 text-white border-primary-600" : "bg-white text-gray-600 border-gray-200"}`}>
+                    Hub Worker (cũ)
+                  </button>
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <div className="space-y-1">
-                    <label className="text-xs font-black text-gray-500 uppercase tracking-widest">Địa chỉ hub</label>
-                    <input type="text" value={hub.url} placeholder="https://pos-demo.workers.dev"
-                      onChange={(e) => setHub({ ...hub, url: e.target.value })}
-                      className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
-                  </div>
                   <div className="space-y-1">
                     <label className="text-xs font-black text-gray-500 uppercase tracking-widest">Mã quán</label>
                     <input type="text" value={hub.store_id} placeholder="quan-01"
                       onChange={(e) => setHub({ ...hub, store_id: e.target.value })}
                       className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
                   </div>
-                  <div className="space-y-1">
-                    <label className="text-xs font-black text-gray-500 uppercase tracking-widest">
-                      Hub key {hub.api_key_masked && <span className="text-gray-400 normal-case">(đã lưu {hub.api_key_masked})</span>}
-                    </label>
-                    <input type="password" value={hub.api_key} placeholder="hub_..."
-                      onChange={(e) => setHub({ ...hub, api_key: e.target.value })}
-                      className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
-                  </div>
+                  {hub.mode === "worker" ? (
+                    <>
+                      <div className="space-y-1">
+                        <label className="text-xs font-black text-gray-500 uppercase tracking-widest">Địa chỉ hub</label>
+                        <input type="text" value={hub.url} placeholder="https://pos-demo.workers.dev"
+                          onChange={(e) => setHub({ ...hub, url: e.target.value })}
+                          className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-black text-gray-500 uppercase tracking-widest">
+                          Hub key {hub.api_key_masked && <span className="text-gray-400 normal-case">(đã lưu {hub.api_key_masked})</span>}
+                        </label>
+                        <input type="password" value={hub.api_key} placeholder="hub_..."
+                          onChange={(e) => setHub({ ...hub, api_key: e.target.value })}
+                          className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
+                      </div>
+                    </>
+                  ) : (
+                    <div className="space-y-1">
+                      <label className="text-xs font-black text-gray-500 uppercase tracking-widest">Tên database D1</label>
+                      <input type="text" value={hub.db_name} placeholder="pos-free"
+                        onChange={(e) => setHub({ ...hub, db_name: e.target.value })}
+                        className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
+                    </div>
+                  )}
                 </div>
+                {hub.mode !== "worker" && (
+                  <div className="p-3 rounded-xl bg-blue-50 border border-blue-200 text-sm text-blue-800">
+                    {hub.cf_token_masked
+                      ? <span>Dùng chung <b>CF token của Tunnel</b> {hub.cf_token_masked}
+                          {hub.cf_account_id ? ` — account ${hub.cf_account_id.slice(0, 8)}…` : ""}.
+                          Token cần thêm quyền <b>Account → D1 (Edit)</b>.</span>
+                      : <span><b>Chưa có CF token</b> — nhập token bên dưới (dùng chung với Tunnel).
+                          Token cần quyền <b>Account → D1 (Edit)</b> (+ Tunnel/DNS nếu dùng tunnel).</span>}
+                  </div>
+                )}
+                {hub.mode !== "worker" && !hub.cf_token_masked && (
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs font-black text-gray-500 uppercase tracking-widest">CF API token</label>
+                      <input type="password" value={hubCf.token} placeholder="cfat_..."
+                        onChange={(e) => setHubCf({ ...hubCf, token: e.target.value })}
+                        className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-black text-gray-500 uppercase tracking-widest">Email CF (nếu Global key)</label>
+                      <input type="text" value={hubCf.email} placeholder="để trống nếu API token"
+                        onChange={(e) => setHubCf({ ...hubCf, email: e.target.value })}
+                        className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-black text-gray-500 uppercase tracking-widest">Account ID (tùy chọn)</label>
+                      <input type="text" value={hubCf.account_id} placeholder="để trống = tự lấy"
+                        onChange={(e) => setHubCf({ ...hubCf, account_id: e.target.value })}
+                        className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
+                    </div>
+                  </div>
+                )}
                 <div className="flex flex-wrap gap-3">
                   <button onClick={saveHub} disabled={hubSaving}
                     className="px-5 py-2.5 rounded-xl font-bold text-sm bg-primary-600 text-white hover:bg-primary-700 shadow-lg transition disabled:opacity-50">

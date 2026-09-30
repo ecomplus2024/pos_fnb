@@ -37,7 +37,7 @@ async function setSetting(db, key, value) {
 
 // auth = { token, email } — có email → Global API Key (X-Auth-Email/Key),
 // không có → API Token (Bearer). Global Key là chuỗi hex ở mục API Keys.
-async function cfApi(auth, method, p, body) {
+export async function cfApi(auth, method, p, body) {
   const headers = { "Content-Type": "application/json" };
   if (auth.email) {
     headers["X-Auth-Email"] = auth.email;
@@ -106,6 +106,8 @@ function tunnelStatus(cfg) {
     hostname: cfg?.hostname || null,
     url: cfg?.hostname ? "https://" + cfg.hostname : null,
     last_exit: lastExit,
+    has_cf_token: !!cfg?.cf_token,
+    cf_token_masked: cfg?.cf_token ? "..." + String(cfg.cf_token).slice(-6) : "",
   };
 }
 

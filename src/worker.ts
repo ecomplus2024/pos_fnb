@@ -2634,11 +2634,22 @@ async function handleAdminGetSettings(env) {
   if (hub && typeof hub === "object") {
     const hubObj = hub;
     const key = typeof hubObj.api_key === "string" ? hubObj.api_key : "";
+    // CF token của Tunnel — D1 mode dùng chung token này
+    let tun = {};
+    try {
+      const tunRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'tunnel'").first();
+      if (tunRow) tun = JSON.parse(tunRow.value) || {};
+    } catch {}
+    const cfTok = typeof tun.cf_token === "string" ? tun.cf_token : "";
     settings["hub"] = {
       enabled: Boolean(hubObj.enabled),
+      mode: typeof hubObj.mode === "string" ? hubObj.mode : "",
       url: typeof hubObj.url === "string" ? hubObj.url : "",
       store_id: typeof hubObj.store_id === "string" ? hubObj.store_id : "",
-      api_key_masked: key ? key.length < 4 ? "***" : "..." + key.slice(-6) : ""
+      db_name: typeof hubObj.db_name === "string" ? hubObj.db_name : "",
+      api_key_masked: key ? key.length < 4 ? "***" : "..." + key.slice(-6) : "",
+      cf_token_masked: cfTok ? "..." + cfTok.slice(-6) : "",
+      cf_account_id: typeof tun.account_id === "string" ? tun.account_id : ""
     };
   }
   return json(settings);
@@ -2688,14 +2699,42 @@ async function handleAdminPutSettings(env, request) {
     const merged = {
       ...current,
       enabled: incoming.enabled ?? current.enabled ?? false,
+      mode: incoming.mode ?? current.mode ?? "",
       url: incoming.url ?? current.url ?? "",
-      store_id: incoming.store_id ?? current.store_id ?? ""
+      store_id: incoming.store_id ?? current.store_id ?? "",
+      db_name: incoming.db_name ?? current.db_name ?? "",
+      account_id: incoming.account_id ?? current.account_id ?? ""
     };
     if (incoming.api_key) {
       merged.api_key = incoming.api_key;
     }
+    // Đổi tên DB → xoá db_id cache để sync resolve lại
+    if (incoming.db_name && incoming.db_name !== current.db_name) {
+      delete merged.db_id;
+      delete merged._db_name_cached;
+    }
     await env.DB.prepare(
       "INSERT INTO settings (key, value) VALUES ('hub', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    ).bind(JSON.stringify(merged)).run();
+  }
+  // CF API token dùng chung (Tunnel + D1 sync) — lưu vào settings.tunnel
+  if (body.cf && typeof body.cf === "object") {
+    const currentRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'tunnel'").first();
+    let current = {};
+    if (currentRow) {
+      try {
+        current = JSON.parse(currentRow.value);
+      } catch {
+        current = {};
+      }
+    }
+    const incoming = body.cf;
+    const merged = { ...current };
+    if (incoming.token) merged.cf_token = String(incoming.token).trim();
+    if (incoming.email !== undefined) merged.cf_email = String(incoming.email).trim();
+    if (incoming.account_id !== undefined) merged.account_id = String(incoming.account_id).trim();
+    await env.DB.prepare(
+      "INSERT INTO settings (key, value) VALUES ('tunnel', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
     ).bind(JSON.stringify(merged)).run();
   }
   return json({ message: "Settings updated", ok: true });

@@ -1,21 +1,41 @@
 // ============================================================
-// sync.mjs — đẩy data quán lên central hub (Worker + D1)
-// Chạy định kỳ trong local server. Settings lấy từ bảng settings
-// key 'hub': { url, store_id, api_key, enabled }
+// sync.mjs — đẩy data quán lên kho trung tâm (D1 trên Cloudflare)
+// Chạy định kỳ trong local server. 2 mode:
+//
+//   mode "d1" (mặc định mới): gọi THẲNG Cloudflare REST API ghi vào
+//     D1 — dùng chung CF API token của phần Tunnel (settings.tunnel
+//     .cf_token) + tên D1 database cấu hình ở settings.hub.db_name.
+//     Token cần quyền "Account → D1 (Edit)". Không cần hub Worker.
+//
+//   mode "worker" (cũ): POST /api/hub/push tới hub Worker với
+//     Bearer api_key từ /api/hub/register.
+//
+// settings.hub = { enabled, mode, store_id, db_name, db_id,
+//                  account_id, device_id, url, api_key }
 // ============================================================
+import { cfApi } from "./tunnel.mjs";
+import { randomUUID } from "node:crypto";
 
 const SYNC_INTERVAL_MS = Number(process.env.SYNC_INTERVAL_MS || 60_000);
 const PUSH_BATCH = 100;
+const RAW_CHUNK = 40; // số statement tối đa mỗi call /d1/raw
 
 let timer = null;
 let running = false;
 let lastStatus = { ok: null, at: null, detail: "chưa sync lần nào" };
+let ensuredD1 = null; // cache "đã ensure schema" theo db_id
 export const getSyncStatus = () => lastStatus;
 
 async function getSetting(db, key) {
   const row = await db.prepare("SELECT value FROM settings WHERE key = ?").bind(key).first();
   if (!row) return null;
   try { return JSON.parse(row.value); } catch { return row.value; }
+}
+
+async function setSetting(db, key, value) {
+  await db.prepare(
+    "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).bind(key, JSON.stringify(value)).run();
 }
 
 async function setSyncStatusSetting(db, status) {
@@ -86,53 +106,323 @@ async function collectCatalog(db) {
   return { categories, products, tables };
 }
 
+// ---------- SQL literal escape cho D1 /raw (không hỗ trợ params) ----------
+function sqlLit(v) {
+  if (v === null || v === undefined) return "NULL";
+  if (typeof v === "number") return Number.isFinite(v) ? String(v) : "NULL";
+  if (typeof v === "boolean") return v ? "1" : "0";
+  return "'" + String(v).replace(/'/g, "''") + "'";
+}
+
+// ---------- mode "d1": nói thẳng với Cloudflare REST API ----------
+
+// Resolve thông tin kết nối: token (từ tunnel), account_id, db_id.
+async function resolveD1(db, hub) {
+  const tun = (await getSetting(db, "tunnel")) || {};
+  const auth = { token: tun.cf_token || hub.cf_token || "", email: tun.cf_email || hub.cf_email || "" };
+  if (!auth.token) {
+    throw new Error("chưa có CF API token — nhập token ở phần Tunnel hoặc Hub (token cần quyền D1 Edit)");
+  }
+  let account_id = tun.account_id || hub.account_id || "";
+  if (!account_id) {
+    const accounts = await cfApi(auth, "GET", "/accounts?per_page=50");
+    account_id = accounts?.[0]?.id || "";
+    if (!account_id) throw new Error("token không thấy account nào — nhập Account ID");
+  }
+  const db_name = String(hub.db_name || "pos-free").trim();
+  let db_id = hub.db_id || "";
+  if (!db_id || hub._db_name_cached !== db_name) {
+    const dbs = await cfApi(
+      auth, "GET",
+      `/accounts/${account_id}/d1/database?name=${encodeURIComponent(db_name)}&per_page=10`
+    ).catch((e) => {
+      throw new Error(`lỗi tìm D1 (token cần quyền "Account → D1: Edit"): ${e.message || e}`);
+    });
+    const match = (dbs || []).find((d) => d.name === db_name);
+    if (!match) {
+      throw new Error(`không thấy D1 database "${db_name}" trong account — tạo DB trên Cloudflare hoặc sửa lại tên`);
+    }
+    db_id = match.uuid || match.id;
+    // Merge vào bản settings mới nhất — tránh xoá field các hàm khác vừa lưu
+    const cur = (await getSetting(db, "hub")) || {};
+    await setSetting(db, "hub", { ...cur, db_name, db_id, account_id, _db_name_cached: db_name });
+  }
+  return { auth, account_id, db_id, db_name };
+}
+
+async function d1Raw(ctx, sql) {
+  const res = await cfApi(ctx.auth, "POST",
+    `/accounts/${ctx.account_id}/d1/database/${ctx.db_id}/raw`, { sql });
+  // /raw trả mảng kết quả theo từng statement — check từng cái
+  const arr = Array.isArray(res) ? res : [res];
+  for (const r of arr) {
+    if (r && r.success === false) throw new Error(r.error || "D1 statement lỗi");
+  }
+  return arr;
+}
+
+async function d1QueryRows(ctx, sql) {
+  const res = await cfApi(ctx.auth, "POST",
+    `/accounts/${ctx.account_id}/d1/database/${ctx.db_id}/query`, { sql });
+  const first = Array.isArray(res) ? res[0] : res;
+  const rows = first?.results ?? [];
+  return Array.isArray(rows) ? rows : [];
+}
+
+const HUB_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS hub_stores (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  store_id TEXT UNIQUE NOT NULL,
+  name TEXT,
+  api_key TEXT,
+  device_id TEXT,
+  last_sync_at TEXT,
+  last_sync_detail TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS hub_orders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  store_id TEXT NOT NULL,
+  local_id INTEGER NOT NULL,
+  display_code TEXT,
+  order_type TEXT,
+  status TEXT,
+  table_name TEXT,
+  customer_phone TEXT,
+  total INTEGER NOT NULL DEFAULT 0,
+  paid_at TEXT,
+  created_at TEXT,
+  updated_at TEXT,
+  items_json TEXT,
+  synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(store_id, local_id)
+);
+CREATE TABLE IF NOT EXISTS hub_products (
+  store_id TEXT NOT NULL,
+  local_id INTEGER NOT NULL,
+  name TEXT,
+  price INTEGER,
+  category TEXT,
+  available INTEGER,
+  production_unit TEXT,
+  sizes_json TEXT,
+  synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(store_id, local_id)
+);
+CREATE TABLE IF NOT EXISTS hub_categories (
+  store_id TEXT NOT NULL,
+  local_id INTEGER NOT NULL,
+  name TEXT,
+  sort_order INTEGER,
+  production_unit TEXT,
+  UNIQUE(store_id, local_id)
+);
+CREATE TABLE IF NOT EXISTS hub_tables (
+  store_id TEXT NOT NULL,
+  local_id INTEGER NOT NULL,
+  name TEXT,
+  seats INTEGER,
+  UNIQUE(store_id, local_id)
+);
+CREATE TABLE IF NOT EXISTS hub_attendance (
+  store_id TEXT NOT NULL,
+  local_id INTEGER NOT NULL,
+  user_name TEXT,
+  check_in_at TEXT,
+  check_out_at TEXT,
+  synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(store_id, local_id)
+);
+`;
+
+async function ensureD1Schema(ctx) {
+  if (ensuredD1 === ctx.db_id) return;
+  await d1Raw(ctx, HUB_SCHEMA_SQL);
+  // DB cũ từ thời hub-worker có thể thiếu cột device_id — thử thêm, lỗi thì bỏ qua
+  try {
+    await d1Raw(ctx, "ALTER TABLE hub_stores ADD COLUMN device_id TEXT;");
+  } catch {}
+  ensuredD1 = ctx.db_id;
+}
+
+// Kiểm tra trùng lặp mã quán: mỗi store_id chỉ được gắn với 1 máy POS.
+// device_id lưu trong hub_stores — máy khác cùng store_id sẽ bị báo lỗi.
+async function claimStoreDevice(db, ctx, hub, storeId) {
+  let deviceId = hub.device_id;
+  if (!deviceId) {
+    deviceId = randomUUID();
+    const cur = (await getSetting(db, "hub")) || {};
+    await setSetting(db, "hub", { ...cur, device_id: deviceId });
+  }
+  const rows = await d1QueryRows(ctx,
+    `SELECT device_id FROM hub_stores WHERE store_id = ${sqlLit(storeId)}`);
+  const existing = rows?.[0]?.device_id;
+  if (existing && existing !== deviceId) {
+    throw new Error(
+      `mã quán "${storeId}" đang được máy POS khác sử dụng — đổi Mã quán khác, ` +
+      `hoặc xóa dòng store này trong bảng hub_stores trên D1 nếu là máy cũ`
+    );
+  }
+  await d1Raw(ctx, `
+    INSERT INTO hub_stores (store_id, name, api_key, device_id, last_sync_at)
+    VALUES (${sqlLit(storeId)}, ${sqlLit(storeId)}, 'd1-direct', ${sqlLit(deviceId)}, datetime('now'))
+    ON CONFLICT(store_id) DO UPDATE SET
+      device_id = COALESCE(hub_stores.device_id, excluded.device_id),
+      last_sync_at = excluded.last_sync_at;
+  `);
+  return deviceId;
+}
+
+function buildCatalogStatements(storeId, catalog) {
+  const stmts = [];
+  const S = sqlLit(storeId);
+  for (const c of catalog.categories) {
+    stmts.push(
+      `INSERT INTO hub_categories (store_id, local_id, name, sort_order, production_unit)
+       VALUES (${S}, ${Number(c.local_id) || 0}, ${sqlLit(c.name)}, ${Number(c.sort_order) || 0}, ${sqlLit(c.production_unit)})
+       ON CONFLICT(store_id, local_id) DO UPDATE SET
+         name=excluded.name, sort_order=excluded.sort_order, production_unit=excluded.production_unit`
+    );
+  }
+  for (const p of catalog.products) {
+    stmts.push(
+      `INSERT INTO hub_products (store_id, local_id, name, price, category, available, production_unit, sizes_json, synced_at)
+       VALUES (${S}, ${Number(p.local_id) || 0}, ${sqlLit(p.name)}, ${Number(p.price) || 0},
+               ${sqlLit(p.category)}, ${p.available ? 1 : 0}, ${sqlLit(p.production_unit)},
+               ${sqlLit(JSON.stringify(p.sizes || []))}, datetime('now'))
+       ON CONFLICT(store_id, local_id) DO UPDATE SET
+         name=excluded.name, price=excluded.price, category=excluded.category,
+         available=excluded.available, production_unit=excluded.production_unit,
+         sizes_json=excluded.sizes_json, synced_at=excluded.synced_at`
+    );
+  }
+  for (const t of catalog.tables) {
+    stmts.push(
+      `INSERT INTO hub_tables (store_id, local_id, name, seats)
+       VALUES (${S}, ${Number(t.local_id) || 0}, ${sqlLit(t.name)}, ${Number(t.seats) || 0})
+       ON CONFLICT(store_id, local_id) DO UPDATE SET name=excluded.name, seats=excluded.seats`
+    );
+  }
+  // Xóa ở hub những món/danh mục/bàn đã bị xóa ở local
+  const catIds = catalog.categories.map((c) => Number(c.local_id) || 0).join(",") || "NULL";
+  const prodIds = catalog.products.map((p) => Number(p.local_id) || 0).join(",") || "NULL";
+  const tblIds = catalog.tables.map((t) => Number(t.local_id) || 0).join(",") || "NULL";
+  stmts.push(`DELETE FROM hub_categories WHERE store_id=${S} AND local_id NOT IN (${catIds})`);
+  stmts.push(`DELETE FROM hub_products WHERE store_id=${S} AND local_id NOT IN (${prodIds})`);
+  stmts.push(`DELETE FROM hub_tables WHERE store_id=${S} AND local_id NOT IN (${tblIds})`);
+  return stmts;
+}
+
+function buildDataStatements(storeId, orders, attendance) {
+  const stmts = [];
+  const S = sqlLit(storeId);
+  for (const o of orders) {
+    stmts.push(
+      `INSERT INTO hub_orders (store_id, local_id, display_code, order_type, status,
+         table_name, customer_phone, total, paid_at, created_at, updated_at, items_json, synced_at)
+       VALUES (${S}, ${Number(o.local_id) || 0}, ${sqlLit(o.display_code)}, ${sqlLit(o.order_type)},
+         ${sqlLit(o.status)}, ${sqlLit(o.table_name)}, ${sqlLit(o.customer_phone)},
+         ${Number(o.total) || 0}, ${sqlLit(o.paid_at)}, ${sqlLit(o.created_at)},
+         ${sqlLit(o.updated_at)}, ${sqlLit(JSON.stringify(o.items || []))}, datetime('now'))
+       ON CONFLICT(store_id, local_id) DO UPDATE SET
+         display_code=excluded.display_code, order_type=excluded.order_type,
+         status=excluded.status, table_name=excluded.table_name,
+         customer_phone=excluded.customer_phone, total=excluded.total,
+         paid_at=excluded.paid_at, updated_at=excluded.updated_at,
+         items_json=excluded.items_json, synced_at=excluded.synced_at`
+    );
+  }
+  for (const a of attendance) {
+    stmts.push(
+      `INSERT INTO hub_attendance (store_id, local_id, user_name, check_in_at, check_out_at, synced_at)
+       VALUES (${S}, ${Number(a.local_id) || 0}, ${sqlLit(a.user_name)},
+         ${sqlLit(a.check_in_at)}, ${sqlLit(a.check_out_at)}, datetime('now'))
+       ON CONFLICT(store_id, local_id) DO UPDATE SET
+         user_name=excluded.user_name, check_in_at=excluded.check_in_at,
+         check_out_at=excluded.check_out_at, synced_at=excluded.synced_at`
+    );
+  }
+  return stmts;
+}
+
+async function runRawChunked(ctx, stmts) {
+  for (let i = 0; i < stmts.length; i += RAW_CHUNK) {
+    const sql = stmts.slice(i, i + RAW_CHUNK).join(";\n") + ";";
+    await d1Raw(ctx, sql);
+  }
+}
+
+async function pushD1(db, hub, orders, catalog, attendance) {
+  const storeId = String(hub.store_id || "").trim();
+  if (!storeId) throw new Error("chưa nhập Mã quán (store_id)");
+  const ctx = await resolveD1(db, hub);
+  await ensureD1Schema(ctx);
+  await claimStoreDevice(db, ctx, hub, storeId);
+  const stmts = [
+    ...buildDataStatements(storeId, orders, attendance),
+    ...buildCatalogStatements(storeId, catalog),
+  ];
+  await runRawChunked(ctx, stmts);
+  return { db_name: ctx.db_name };
+}
+
+// ---------- mode "worker": POST tới hub Worker như cũ ----------
+async function pushWorker(hub, orders, catalog, attendance) {
+  if (!hub.url || !hub.api_key || !hub.store_id) {
+    throw new Error("mode worker cần đủ url + store_id + api_key");
+  }
+  const url = hub.url.replace(/\/+$/, "") + "/api/hub/push";
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${hub.api_key}`,
+    },
+    body: JSON.stringify({
+      store_id: hub.store_id, full_catalog: true,
+      orders, attendance, ...catalog,
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`hub ${res.status}: ${data.message || data.error || ""}`);
+}
+
+async function markSynced(db, orders, attendance) {
+  const now = new Date().toISOString();
+  for (const o of orders) {
+    await db.prepare("UPDATE orders SET synced_at = ? WHERE id = ?").bind(now, o.local_id).run();
+  }
+  for (const a of attendance) {
+    await db.prepare("UPDATE attendance SET synced_at = ? WHERE id = ?").bind(now, a.local_id).run();
+  }
+  return now;
+}
+
 async function syncOnce(db) {
   if (running) return;
   running = true;
   try {
     const hub = await getSetting(db, "hub");
-    if (!hub?.enabled || !hub?.url || !hub?.api_key || !hub?.store_id) {
+    if (!hub?.enabled) {
       lastStatus = { ok: null, at: null, detail: "sync tắt hoặc chưa cấu hình hub" };
       return;
     }
+    const mode = hub.mode || (hub.url && hub.api_key ? "worker" : "d1");
 
     const orders = await collectOrders(db);
     const catalog = await collectCatalog(db);
     const attendance = await collectAttendance(db);
-    const payload = {
-      store_id: hub.store_id,
-      full_catalog: true,
-      orders,
-      attendance,
-      ...catalog,
-    };
 
-    const url = hub.url.replace(/\/+$/, "") + "/api/hub/push";
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${hub.api_key}`,
-      },
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      lastStatus = { ok: false, at: new Date().toISOString(), detail: `hub ${res.status}: ${data.message || data.error || ""}` };
+    let detail;
+    if (mode === "d1") {
+      const { db_name } = await pushD1(db, hub, orders, catalog, attendance);
+      detail = `đẩy ${orders.length} đơn + ${attendance.length} chấm công + catalog (${catalog.products.length} món) → D1 "${db_name}"`;
     } else {
-      const now = new Date().toISOString();
-      for (const o of orders) {
-        await db.prepare(
-          "UPDATE orders SET synced_at = ? WHERE id = ?"
-        ).bind(now, o.local_id).run();
-      }
-      for (const a of attendance) {
-        await db.prepare(
-          "UPDATE attendance SET synced_at = ? WHERE id = ?"
-        ).bind(now, a.local_id).run();
-      }
-      lastStatus = { ok: true, at: now, detail: `đẩy ${orders.length} đơn + ${attendance.length} chấm công + catalog (${catalog.products.length} món)` };
+      await pushWorker(hub, orders, catalog, attendance);
+      detail = `đẩy ${orders.length} đơn + ${attendance.length} chấm công + catalog (${catalog.products.length} món)`;
     }
+    const now = await markSynced(db, orders, attendance);
+    lastStatus = { ok: true, at: now, detail };
     await setSyncStatusSetting(db, lastStatus);
   } catch (err) {
     lastStatus = { ok: false, at: new Date().toISOString(), detail: String(err?.message || err) };
@@ -151,15 +441,37 @@ export function startSyncLoop(db) {
   timer.unref?.();
 }
 
-// Cho admin nút "Đồng bộ ngay" / "Kiểm tra kết nối"
+// Cho admin nút "Đồng bộ ngay"
 export async function syncNow(db) {
   await syncOnce(db);
   return lastStatus;
 }
 
+// Nút "Kiểm tra kết nối" — mode nào cũng trả {ok, detail}
 export async function hubPing(db) {
   const hub = await getSetting(db, "hub");
-  if (!hub?.url || !hub?.api_key) return { ok: false, detail: "chưa cấu hình hub" };
+  if (!hub) return { ok: false, detail: "chưa cấu hình hub" };
+  const mode = hub.mode || (hub.url && hub.api_key ? "worker" : "d1");
+
+  if (mode === "d1") {
+    try {
+      if (!String(hub.store_id || "").trim()) {
+        return { ok: false, detail: "chưa nhập Mã quán (store_id)" };
+      }
+      const ctx = await resolveD1(db, hub);
+      await ensureD1Schema(ctx);
+      await claimStoreDevice(db, ctx, hub, String(hub.store_id).trim());
+      return {
+        ok: true,
+        detail: `token OK → account ${ctx.account_id.slice(0, 8)}… → D1 "${ctx.db_name}" ✓ → quán "${hub.store_id}" ✓`,
+      };
+    } catch (err) {
+      return { ok: false, detail: String(err?.message || err) };
+    }
+  }
+
+  // mode worker như cũ
+  if (!hub.url || !hub.api_key) return { ok: false, detail: "chưa cấu hình hub" };
   try {
     const res = await fetch(hub.url.replace(/\/+$/, "") + "/api/hub/ping", {
       headers: { Authorization: `Bearer ${hub.api_key}` },
