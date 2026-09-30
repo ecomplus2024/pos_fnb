@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "d1-sync-3";
+const APP_BUILD = "att-admin-1";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -6557,11 +6557,6 @@ function AdminPanel({ embedded = false, onExit }) {
   // ---- Staff modal state
   const [showStaffModal, setShowStaffModal] = useState(false);
   const [staffForm, setStaffForm] = useState({ username: "", password: "", full_name: "", role: "staff", pin: "" });
-  // Chấm công: báo cáo giờ vào/ra
-  const [attRows, setAttRows] = useState([]);
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const [attFrom, setAttFrom] = useState(todayStr);
-  const [attTo, setAttTo] = useState(todayStr);
 
   // ---- Settings state
   const [settings, setSettings] = useState({
@@ -6604,7 +6599,7 @@ function AdminPanel({ embedded = false, onExit }) {
     });
   }, []);
 
-  useEffect(() => { fetchData(); }, [tab, attFrom, attTo]);
+  useEffect(() => { fetchData(); }, [tab]);
 
   const fetchData = async () => {
     try {
@@ -6624,8 +6619,6 @@ function AdminPanel({ embedded = false, onExit }) {
         setProducts(pRes);
       } else if (tab === "staff") {
         setUsers(await apiAuth("/api/admin/users"));
-      } else if (tab === "attendance") {
-        setAttRows(await apiAuth(`/api/admin/attendance?from=${attFrom}&to=${attTo}`));
       } else if (tab === "tables") {
         const data = await apiAuth("/api/tables");
         setTables(Array.isArray(data) ? data : data.tables || []);
@@ -7239,7 +7232,6 @@ function AdminPanel({ embedded = false, onExit }) {
             { id: "categories", label: "Danh mục", icon: "layout-grid" },
             { id: "orders", label: "Đơn hàng", icon: "clipboard-list" },
             { id: "staff", label: "Tài khoản", icon: "users" },
-            { id: "attendance", label: "Chấm công", icon: "clock" },
             { id: "settings", label: "Cấu hình chung", icon: "settings" },
             { id: "reports", label: "Báo cáo", icon: "bar-chart-2" },
           ].map((item) => (
@@ -7263,7 +7255,7 @@ function AdminPanel({ embedded = false, onExit }) {
               {[
                 { id: "products", label: "Sản phẩm" }, { id: "tables", label: "Bàn" },
                 { id: "categories", label: "Danh mục" }, { id: "orders", label: "Đơn hàng" },
-                { id: "staff", label: "Tài khoản" }, { id: "attendance", label: "Chấm công" }, { id: "settings", label: "Cấu hình" },
+                { id: "staff", label: "Tài khoản" }, { id: "settings", label: "Cấu hình" },
                 { id: "reports", label: "Báo cáo" },
               ].map((item) => (
                 <button key={item.id} onClick={() => setTab(item.id)}
@@ -7277,11 +7269,11 @@ function AdminPanel({ embedded = false, onExit }) {
         <div className="flex flex-col md:flex-row md:flex-wrap justify-between items-start md:items-center mb-4 md:mb-8 lg:mb-10 gap-3 md:gap-4 overflow-x-hidden">
           <div>
             <h2 className="text-lg md:text-2xl lg:text-3xl font-black text-gray-800 tracking-tight">
-              {tab === "products" ? "Sản phẩm" : tab === "tables" ? "Bàn" : tab === "categories" ? "Danh mục" : tab === "orders" ? "Đơn hàng" : tab === "reports" ? "Báo cáo thống kê" : tab === "settings" ? "Cấu hình" : tab === "attendance" ? "Chấm công" : "Tài khoản"}
+              {tab === "products" ? "Sản phẩm" : tab === "tables" ? "Bàn" : tab === "categories" ? "Danh mục" : tab === "orders" ? "Đơn hàng" : tab === "reports" ? "Báo cáo thống kê" : tab === "settings" ? "Cấu hình" : "Tài khoản"}
             </h2>
             <p className="hidden md:block text-gray-500 font-medium mt-1 text-sm">Cập nhật và theo dõi các thông số hệ thống</p>
           </div>
-          {!["orders", "reports", "settings", "attendance"].includes(tab) && (
+          {!["orders", "reports", "settings"].includes(tab) && (
             <div className="flex flex-wrap items-center gap-2 md:gap-3 w-full md:w-auto min-w-0">
               <button
                 onClick={() => {
@@ -7516,92 +7508,6 @@ function AdminPanel({ embedded = false, onExit }) {
         )}
 
         {/* Chấm công Tab */}
-        {tab === "attendance" && (
-          <div className="space-y-4">
-            <div className="bg-white rounded-2xl border border-gray-200 p-4 flex flex-wrap items-center gap-3">
-              <input type="date" value={attFrom} onChange={(e) => setAttFrom(e.target.value)}
-                className="px-3 py-2 border rounded-xl text-sm font-bold" />
-              <span className="text-gray-400 font-bold">→</span>
-              <input type="date" value={attTo} onChange={(e) => setAttTo(e.target.value)}
-                className="px-3 py-2 border rounded-xl text-sm font-bold" />
-              <button onClick={() => { const t = new Date().toISOString().slice(0, 10); setAttFrom(t); setAttTo(t); }}
-                className="px-4 py-2 bg-gray-100 rounded-xl text-xs font-black uppercase tracking-wider text-gray-600 hover:bg-gray-200 transition">
-                Hôm nay
-              </button>
-              <button onClick={() => { const d = new Date(Date.now() - 6 * 864e5).toISOString().slice(0, 10); setAttFrom(d); setAttTo(new Date().toISOString().slice(0, 10)); }}
-                className="px-4 py-2 bg-gray-100 rounded-xl text-xs font-black uppercase tracking-wider text-gray-600 hover:bg-gray-200 transition">
-                7 ngày
-              </button>
-              <a href="/chamcong" target="_blank" rel="noreferrer"
-                className="ml-auto px-4 py-2 bg-primary-50 text-primary-700 rounded-xl text-xs font-black uppercase tracking-wider hover:bg-primary-100 transition">
-                Mở màn chấm công →
-              </a>
-            </div>
-
-            {/* Tổng giờ theo nhân viên */}
-            {(() => {
-              const totals = {};
-              for (const r of attRows) {
-                if (!r.check_out_at) continue;
-                const h = (new Date(r.check_out_at) - new Date(r.check_in_at)) / 3600000;
-                totals[r.name] = (totals[r.name] || 0) + h;
-              }
-              const names = Object.keys(totals);
-              if (!names.length) return null;
-              return (
-                <div className="bg-white rounded-2xl border border-gray-200 p-4">
-                  <p className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3">Tổng giờ trong kỳ</p>
-                  <div className="flex flex-wrap gap-2">
-                    {names.map((n) => (
-                      <span key={n} className="px-4 py-2 bg-emerald-50 border border-transparent rounded-xl font-black text-emerald-700 text-sm">
-                        {n}: {totals[n].toFixed(1)}h
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              );
-            })()}
-
-            <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b bg-gray-50 text-left">
-                    <th className="p-4 font-black text-gray-400 uppercase text-[10px] tracking-widest">Nhân viên</th>
-                    <th className="p-4 font-black text-gray-400 uppercase text-[10px] tracking-widest">Vào ca</th>
-                    <th className="p-4 font-black text-gray-400 uppercase text-[10px] tracking-widest">Tan ca</th>
-                    <th className="p-4 font-black text-gray-400 uppercase text-[10px] tracking-widest text-right">Giờ công</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {attRows.map((r) => {
-                    const hrs = r.check_out_at
-                      ? ((new Date(r.check_out_at) - new Date(r.check_in_at)) / 3600000)
-                      : null;
-                    return (
-                      <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50/50">
-                        <td className="p-4 font-bold text-gray-800">{r.name}</td>
-                        <td className="p-4 text-gray-600 font-medium">
-                          {r.check_in_at ? new Date(r.check_in_at).toLocaleString("vi-VN", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" }) : "—"}
-                        </td>
-                        <td className="p-4 text-gray-600 font-medium">
-                          {r.check_out_at
-                            ? new Date(r.check_out_at).toLocaleString("vi-VN", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" })
-                            : <span className="text-green-600 font-black text-xs">● Đang trong ca</span>}
-                        </td>
-                        <td className="p-4 text-right font-black text-gray-800">
-                          {hrs != null ? `${hrs.toFixed(1)}h` : "—"}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {attRows.length === 0 && (
-                    <tr><td colSpan={4} className="p-12 text-center text-gray-400 font-medium">Chưa có lượt chấm công nào</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
 
         {/* Reports Tab Content */}
         {tab === "reports" && (
@@ -8080,7 +7986,7 @@ function AdminPanel({ embedded = false, onExit }) {
           </div>
         )}
 
-        {(tab === "products" ? products : tab === "tables" ? tables : tab === "categories" ? categories : tab === "orders" ? orders : tab === "staff" ? users : []).length === 0 && tab !== "settings" && tab !== "reports" && tab !== "attendance" && (
+        {(tab === "products" ? products : tab === "tables" ? tables : tab === "categories" ? categories : tab === "orders" ? orders : tab === "staff" ? users : []).length === 0 && tab !== "settings" && tab !== "reports" && (
           <div className="p-32 text-center text-gray-300">
             <Icon name="package" className="w-16 h-16 mx-auto mb-6 opacity-20" />
             <p className="font-black uppercase text-xs tracking-widest">Hệ thống chưa có dữ liệu</p>
@@ -8633,9 +8539,14 @@ function AttendanceView() {
               {" · "}Bấm vào tên để vào ca / tan ca
             </p>
           </div>
-          <button onClick={load} className="px-4 py-2 bg-white rounded-xl font-bold text-sm text-gray-600 shadow-sm border border-gray-200 active:scale-95 transition">
-            Tải lại
-          </button>
+          <div className="flex items-center gap-2">
+            <a href="/quanly-chamcong" className="px-4 py-2 bg-white rounded-xl font-bold text-sm text-gray-600 shadow-sm border border-gray-200 active:scale-95 transition">
+              Quản lý
+            </a>
+            <button onClick={load} className="px-4 py-2 bg-white rounded-xl font-bold text-sm text-gray-600 shadow-sm border border-gray-200 active:scale-95 transition">
+              Tải lại
+            </button>
+          </div>
         </div>
 
         {result && (
@@ -8680,6 +8591,310 @@ function AttendanceView() {
   );
 }
 
+// ============ Attendance Admin — /quanly-chamcong ============
+// Trang quản lý chấm công RIÊNG, tách khỏi màn chấm công dùng chung.
+// Session riêng (key att_admin_token) — đăng nhập POS không mở được
+// trang này và ngược lại. Chỉ tài khoản role admin.
+const ATT_ADMIN_TOKEN = "att_admin_token";
+
+const attLocalInput = (iso) => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+
+function AttendanceAdminView() {
+  const [token, setToken] = useState(() => localStorage.getItem(ATT_ADMIN_TOKEN) || "");
+  const [admin, setAdmin] = useState(null);
+  const [checking, setChecking] = useState(!!localStorage.getItem(ATT_ADMIN_TOKEN));
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [loginErr, setLoginErr] = useState("");
+  const todayD = new Date().toISOString().slice(0, 10);
+  const [from, setFrom] = useState(todayD);
+  const [to, setTo] = useState(todayD);
+  const [rows, setRows] = useState(null);
+  const [msg, setMsg] = useState(null);
+  const [editing, setEditing] = useState(null); // { id, ci, co, note }
+
+  useEffect(() => {
+    if (!token) return;
+    authVerify(token).then((u) => {
+      if (u && u.role === "admin") setAdmin(u);
+      else localStorage.removeItem(ATT_ADMIN_TOKEN);
+      setChecking(false);
+    });
+  }, []);
+
+  const doLogout = async () => {
+    await authLogout(token);
+    localStorage.removeItem(ATT_ADMIN_TOKEN);
+    setAdmin(null); setToken(""); setRows(null);
+  };
+
+  const onLogin = async (e) => {
+    e.preventDefault();
+    setLoginErr("");
+    try {
+      const data = await authLogin(username, password);
+      if (data.user?.role !== "admin") {
+        setLoginErr("Chỉ tài khoản admin mới quản lý chấm công");
+        return;
+      }
+      localStorage.setItem(ATT_ADMIN_TOKEN, data.access_token);
+      setToken(data.access_token);
+      setAdmin(data.user);
+    } catch (err) {
+      setLoginErr(err.message || "Đăng nhập thất bại");
+    }
+  };
+
+  const call = async (p, opts = {}) => {
+    const r = await fetch(p, {
+      ...opts,
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      if (r.status === 401 || r.status === 403) doLogout();
+      throw new Error(j.message || j.error || `Lỗi ${r.status}`);
+    }
+    return j;
+  };
+
+  const load = async () => {
+    setMsg(null);
+    try {
+      setRows(await call(`/api/admin/attendance?from=${from}&to=${to}`));
+    } catch (e) {
+      setRows([]);
+      setMsg({ text: e.message, error: true });
+    }
+  };
+  useEffect(() => { if (admin) load(); }, [admin, from, to]);
+
+  const saveEdit = async () => {
+    try {
+      await call(`/api/admin/attendance/${editing.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          check_in_at: editing.ci ? new Date(editing.ci).toISOString() : undefined,
+          check_out_at: editing.co ? new Date(editing.co).toISOString() : null,
+          note: editing.note,
+        }),
+      });
+      setEditing(null);
+      setMsg({ text: "Đã lưu", error: false });
+      load();
+    } catch (e) {
+      setMsg({ text: e.message, error: true });
+    }
+  };
+
+  const closeShift = async (id) => {
+    try {
+      await call(`/api/admin/attendance/${id}`, {
+        method: "PUT",
+        body: JSON.stringify({ check_out_at: new Date().toISOString() }),
+      });
+      load();
+    } catch (e) {
+      setMsg({ text: e.message, error: true });
+    }
+  };
+
+  const delRow = async (id) => {
+    if (!window.confirm("Xóa lượt chấm công này?")) return;
+    try {
+      await call(`/api/admin/attendance/${id}`, { method: "DELETE" });
+      load();
+    } catch (e) {
+      setMsg({ text: e.message, error: true });
+    }
+  };
+
+  // ---- Màn đăng nhập riêng ----
+  if (checking) {
+    return <div className="min-h-screen flex items-center justify-center"><div className="text-gray-500">Đang tải...</div></div>;
+  }
+  if (!admin) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-emerald-600 to-emerald-900 p-4">
+        <div className="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md">
+          <div className="flex flex-col items-center mb-8">
+            <div className="bg-emerald-100 p-4 rounded-full mb-4">
+              <Icon name="clock" className="w-8 h-8 text-emerald-600" />
+            </div>
+            <h1 className="text-2xl font-black text-gray-800">Quản lý chấm công</h1>
+            <p className="text-gray-500 mt-2 text-center text-sm">Đăng nhập bằng tài khoản admin</p>
+          </div>
+          <form onSubmit={onLogin} className="space-y-4">
+            <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} required
+              className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-emerald-500 outline-none"
+              placeholder="Tên đăng nhập admin" />
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required
+              className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-emerald-500 outline-none"
+              placeholder="Mật khẩu" />
+            {loginErr && <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm text-center">{loginErr}</div>}
+            <button type="submit"
+              className="w-full bg-emerald-600 text-white py-3 rounded-xl font-bold hover:bg-emerald-700 transition shadow-lg">
+              Đăng nhập
+            </button>
+          </form>
+          <a href="/chamcong" className="mt-4 block text-center text-sm font-bold text-gray-400 hover:text-emerald-600">
+            ← Về màn chấm công
+          </a>
+        </div>
+      </div>
+    );
+  }
+
+  const fmtD = (iso) => iso
+    ? new Date(iso).toLocaleString("vi-VN", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" })
+    : "—";
+  const totals = {};
+  for (const r of rows || []) {
+    if (!r.check_out_at) continue;
+    const h = (new Date(r.check_out_at) - new Date(r.check_in_at)) / 3600000;
+    if (h > 0) totals[r.name] = (totals[r.name] || 0) + h;
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-100 p-4 md:p-8">
+      <div className="max-w-5xl mx-auto space-y-4">
+        <div className="bg-white rounded-2xl border border-gray-200 p-5 flex flex-wrap items-center gap-3">
+          <div className="bg-emerald-100 p-3 rounded-2xl"><Icon name="clock" className="w-6 h-6 text-emerald-600" /></div>
+          <div className="flex-1">
+            <h1 className="text-xl font-black text-gray-800">Quản lý chấm công</h1>
+            <p className="text-xs text-gray-400 font-bold">Admin: {admin.full_name || admin.username}</p>
+          </div>
+          <a href="/chamcong" className="px-4 py-2 rounded-xl text-xs font-black bg-gray-100 text-gray-600 hover:bg-gray-200 transition">
+            Màn chấm công →
+          </a>
+          <button onClick={doLogout}
+            className="px-4 py-2 rounded-xl text-xs font-black bg-red-50 text-red-600 hover:bg-red-100 transition">
+            Đăng xuất
+          </button>
+        </div>
+
+        <div className="bg-white rounded-2xl border border-gray-200 p-4 flex flex-wrap items-center gap-3">
+          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
+            className="px-3 py-2 border rounded-xl text-sm font-bold" />
+          <span className="text-gray-400 font-bold">→</span>
+          <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
+            className="px-3 py-2 border rounded-xl text-sm font-bold" />
+          <button onClick={() => { setFrom(todayD); setTo(todayD); }}
+            className="px-4 py-2 bg-gray-100 rounded-xl text-xs font-black uppercase tracking-wider text-gray-600 hover:bg-gray-200 transition">
+            Hôm nay
+          </button>
+          <button onClick={() => { const d = new Date(Date.now() - 6 * 864e5).toISOString().slice(0, 10); setFrom(d); setTo(todayD); }}
+            className="px-4 py-2 bg-gray-100 rounded-xl text-xs font-black uppercase tracking-wider text-gray-600 hover:bg-gray-200 transition">
+            7 ngày
+          </button>
+          <button onClick={() => { const m = todayD.slice(0, 7); setFrom(m + "-01"); setTo(todayD); }}
+            className="px-4 py-2 bg-gray-100 rounded-xl text-xs font-black uppercase tracking-wider text-gray-600 hover:bg-gray-200 transition">
+            Tháng này
+          </button>
+        </div>
+
+        {Object.keys(totals).length > 0 && (
+          <div className="bg-white rounded-2xl border border-gray-200 p-4">
+            <p className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3">Tổng giờ trong kỳ</p>
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(totals).map(([n, h]) => (
+                <span key={n} className="px-4 py-2 bg-emerald-50 rounded-xl font-black text-emerald-700 text-sm">
+                  {n}: {h.toFixed(1)}h
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {msg && (
+          <div className={`p-3 rounded-xl text-sm font-bold ${msg.error ? "bg-red-50 text-red-700 border border-red-200" : "bg-green-50 text-green-700 border border-green-200"}`}>
+            {msg.text}
+          </div>
+        )}
+
+        <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b bg-gray-50 text-left">
+                <th className="p-4 font-black text-gray-400 uppercase text-[10px] tracking-widest">Nhân viên</th>
+                <th className="p-4 font-black text-gray-400 uppercase text-[10px] tracking-widest">Vào ca</th>
+                <th className="p-4 font-black text-gray-400 uppercase text-[10px] tracking-widest">Tan ca</th>
+                <th className="p-4 font-black text-gray-400 uppercase text-[10px] tracking-widest text-right">Giờ công</th>
+                <th className="p-4"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {(rows || []).map((r) => {
+                const hrs = r.check_out_at ? (new Date(r.check_out_at) - new Date(r.check_in_at)) / 3600000 : null;
+                const isEd = editing?.id === r.id;
+                return (
+                  <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50/50 align-top">
+                    <td className="p-4 font-bold text-gray-800">{r.name}</td>
+                    <td className="p-4 text-gray-600 font-medium">
+                      {isEd
+                        ? <input type="datetime-local" value={editing.ci}
+                            onChange={(e) => setEditing({ ...editing, ci: e.target.value })}
+                            className="px-2 py-1 border rounded-lg text-xs" />
+                        : fmtD(r.check_in_at)}
+                    </td>
+                    <td className="p-4 text-gray-600 font-medium">
+                      {isEd
+                        ? <input type="datetime-local" value={editing.co}
+                            onChange={(e) => setEditing({ ...editing, co: e.target.value })}
+                            className="px-2 py-1 border rounded-lg text-xs" />
+                        : r.check_out_at
+                          ? fmtD(r.check_out_at)
+                          : <span className="text-emerald-600 font-black text-xs">● Đang trong ca</span>}
+                    </td>
+                    <td className="p-4 text-right font-black text-gray-800">
+                      {hrs != null ? `${hrs.toFixed(1)}h` : "—"}
+                    </td>
+                    <td className="p-4">
+                      <div className="flex justify-end gap-1">
+                        {isEd ? (
+                          <>
+                            <button onClick={saveEdit}
+                              className="px-3 py-1.5 rounded-lg text-xs font-black bg-emerald-600 text-white hover:bg-emerald-700">Lưu</button>
+                            <button onClick={() => setEditing(null)}
+                              className="px-3 py-1.5 rounded-lg text-xs font-black bg-gray-200 text-gray-600">Hủy</button>
+                          </>
+                        ) : (
+                          <>
+                            {!r.check_out_at && (
+                              <button onClick={() => closeShift(r.id)}
+                                className="px-3 py-1.5 rounded-lg text-xs font-black bg-amber-100 text-amber-700 hover:bg-amber-200">Tan ca</button>
+                            )}
+                            <button onClick={() => setEditing({ id: r.id, ci: attLocalInput(r.check_in_at), co: attLocalInput(r.check_out_at), note: r.note || "" })}
+                              className="px-3 py-1.5 rounded-lg text-xs font-black bg-gray-100 text-gray-600 hover:bg-gray-200">Sửa</button>
+                            <button onClick={() => delRow(r.id)}
+                              className="px-3 py-1.5 rounded-lg text-xs font-black bg-red-50 text-red-500 hover:bg-red-100">Xóa</button>
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {rows && rows.length === 0 && (
+                <tr><td colSpan={5} className="p-12 text-center text-gray-400 font-medium">Chưa có lượt chấm công nào</td></tr>
+              )}
+              {rows === null && (
+                <tr><td colSpan={5} className="p-12 text-center text-gray-400 font-medium">Đang tải...</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ============ App Root ============
 function App() {
   const [mode, setMode] = useState(null);
@@ -8694,7 +8909,11 @@ function App() {
     const shipMatch = window.location.pathname === "/ship";
     const shipperMatch = window.location.pathname === "/shipper";
     const chamcongMatch = window.location.pathname === "/chamcong";
-    if (chamcongMatch) {
+    const attAdminMatch = window.location.pathname === "/quanly-chamcong";
+    if (attAdminMatch) {
+      setMode("attadmin");
+      setAuthLoading(false);
+    } else if (chamcongMatch) {
       setMode("chamcong");
       setAuthLoading(false);
     } else if (kitchenMatch) {
@@ -8762,6 +8981,10 @@ function App() {
 
   if (mode === "chamcong") {
     return <AttendanceView />;
+  }
+
+  if (mode === "attadmin") {
+    return <AttendanceAdminView />;
   }
 
   if (mode === "kitchen" || mode === "counter") {

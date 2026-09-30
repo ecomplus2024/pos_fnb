@@ -2312,6 +2312,46 @@ async function handleAdminAttendance(env, from, to) {
   })));
 }
 
+// Sửa / xóa một lượt chấm công — trang quản lý riêng /quanly-chamcong.
+// PUT body: { check_in_at?, check_out_at?, note? } — chấp nhận ISO hoặc
+// datetime-local. check_out_at rỗng = mở lại ca. Sửa xong reset synced_at
+// để sync.mjs đẩy bản mới lên hub.
+async function handleAdminAttendanceMutate(env, attId, request) {
+  const id = parseInt(attId, 10);
+  if (!id) return json({ message: "id kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+  const row = await env.DB.prepare("SELECT id FROM attendance WHERE id = ?").bind(id).first();
+  if (!row) return json({ message: "Kh\xF4ng t\xECm th\u1EA5y b\u1EA3n ghi" }, 404);
+
+  if (request.method === "DELETE") {
+    await env.DB.prepare("DELETE FROM attendance WHERE id = ?").bind(id).run();
+    return json({ ok: true });
+  }
+
+  let body;
+  try { body = await request.json(); } catch { body = {}; }
+  const parseDT = (v) => {
+    if (v === undefined) return undefined; // kh\xF4ng g\u1EEDi → gi\u1EEF nguy\xEAn
+    if (v === null || v === "") return null;
+    const d = new Date(v);
+    return isNaN(d.getTime()) ? "INVALID" : d.toISOString();
+  };
+  const ci = parseDT(body.check_in_at);
+  if (ci === null || ci === "INVALID") return json({ message: "Gi\u1EDD v\xE0o kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+  const co = parseDT(body.check_out_at);
+  if (co === "INVALID") return json({ message: "Gi\u1EDD ra kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+
+  const sets = [];
+  const params = [];
+  if (ci !== undefined) { sets.push("check_in_at = ?"); params.push(ci); }
+  if (co !== undefined) { sets.push("check_out_at = ?"); params.push(co); }
+  if (body.note !== undefined) { sets.push("note = ?"); params.push(String(body.note ?? "")); }
+  if (!sets.length) return json({ message: "kh\xF4ng c\xF3 g\xEC \u0111\u1EC3 s\u1EEDa" }, 400);
+  sets.push("synced_at = NULL");
+  params.push(id);
+  await env.DB.prepare(`UPDATE attendance SET ${sets.join(", ")} WHERE id = ?`).bind(...params).run();
+  return json({ ok: true });
+}
+
 async function handleAdminAddProduct(env, body) {
   if (!body.name || body.price === void 0 || body.price === null || !body.category_id) {
     return json({ message: "name, price, category_id l\xE0 b\u1EAFt bu\u1ED9c" }, 400);
@@ -3403,6 +3443,17 @@ var worker_default = {
       if (denied) return denied;
       try {
         return await handleAdminAttendance(env, url.searchParams.get("from"), url.searchParams.get("to"));
+      } catch (err) {
+        return json({ error: String(err) }, 500);
+      }
+    }
+    const attMutMatch = url.pathname.match(/^\/api\/admin\/attendance\/(\d+)$/);
+    if (attMutMatch && (request.method === "PUT" || request.method === "DELETE")) {
+      const auth = await requireAuth(env, request);
+      const denied = requireRole(auth, ["admin"]);
+      if (denied) return denied;
+      try {
+        return await handleAdminAttendanceMutate(env, attMutMatch[1], request);
       } catch (err) {
         return json({ error: String(err) }, 500);
       }
