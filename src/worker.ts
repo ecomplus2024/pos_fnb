@@ -2141,10 +2141,17 @@ function randomSalt() {
 }
 async function handleAdminGetUsers(env) {
   const result = await env.DB.prepare(
-    "SELECT id, username, role, full_name FROM users ORDER BY id"
+    `SELECT id, username, role, full_name,
+            CASE WHEN pin IS NOT NULL AND pin != '' THEN 1 ELSE 0 END AS has_pin
+     FROM users ORDER BY id`
   ).all();
   return json(result.results.map((u) => ({ ...u, full_name: u.full_name ?? null })));
 }
+
+function validPin(pin) {
+  return typeof pin === "string" && /^[0-9]{4,6}$/.test(pin.trim());
+}
+
 async function handleAdminAddUser(env, body) {
   if (!body.username || !body.password) {
     return json({ message: "Username v\xE0 password l\xE0 b\u1EAFt bu\u1ED9c" }, 400);
@@ -2152,11 +2159,15 @@ async function handleAdminAddUser(env, body) {
   const existing = await env.DB.prepare("SELECT id FROM users WHERE username = ?").bind(body.username).first();
   if (existing) return json({ message: "Username already exists" }, 400);
   const role = body.role ?? "staff";
+  const pin = body.pin == null || body.pin === "" ? null : String(body.pin).trim();
+  if (pin !== null && !validPin(pin)) {
+    return json({ message: "PIN ch\u1EA5m c\xF4ng ph\u1EA3i l\xE0 4-6 ch\u1EEF s\u1ED1" }, 400);
+  }
   const salt = randomSalt();
   const passwordHash = await hashPassword(body.password, salt);
   const result = await env.DB.prepare(
-    `INSERT INTO users (username, password_hash, salt, full_name, role) VALUES (?, ?, ?, ?, ?) RETURNING id`
-  ).bind(body.username, passwordHash, salt, body.full_name ?? null, role).first();
+    `INSERT INTO users (username, password_hash, salt, full_name, role, pin) VALUES (?, ?, ?, ?, ?, ?) RETURNING id`
+  ).bind(body.username, passwordHash, salt, body.full_name ?? null, role, pin).first();
   if (!result) return json({ message: "Kh\xF4ng t\u1EA1o \u0111\u01B0\u1EE3c ng\u01B0\u1EDDi d\xF9ng" }, 500);
   return json({ message: "User added successful", id: result.id }, 201);
 }
@@ -2179,15 +2190,123 @@ async function handleAdminUpdateDeleteUser(env, userId, request) {
   }
   const fullName = body.full_name ?? user.full_name;
   const role = body.role ?? user.role;
+  // pin: undefined = giữ nguyên, null/"" = xoá PIN, còn lại = đặt PIN mới
+  let pinSql = "";
+  const pinParams = [];
+  if (body.pin !== undefined) {
+    if (body.pin === null || body.pin === "") {
+      pinSql = ", pin = NULL";
+    } else {
+      const pin = String(body.pin).trim();
+      if (!validPin(pin)) return json({ message: "PIN chấm công phải là 4-6 chữ số" }, 400);
+      pinSql = ", pin = ?";
+      pinParams.push(pin);
+    }
+  }
   if (body.password) {
     const salt = randomSalt();
     const passwordHash = await hashPassword(body.password, salt);
-    await env.DB.prepare("UPDATE users SET full_name = ?, role = ?, password_hash = ?, salt = ? WHERE id = ?").bind(fullName, role, passwordHash, salt, userId).run();
+    await env.DB.prepare(`UPDATE users SET full_name = ?, role = ?, password_hash = ?, salt = ?${pinSql} WHERE id = ?`).bind(fullName, role, passwordHash, salt, ...pinParams, userId).run();
   } else {
-    await env.DB.prepare("UPDATE users SET full_name = ?, role = ? WHERE id = ?").bind(fullName, role, userId).run();
+    await env.DB.prepare(`UPDATE users SET full_name = ?, role = ?${pinSql} WHERE id = ?`).bind(fullName, role, ...pinParams, userId).run();
   }
   return json({ message: "User updated" });
 }
+
+// ================= Chấm công =================
+
+// Danh sách nhân viên + trạng thái ca — cho màn /chamcong trên máy POS chung.
+// Không trả pin/password — chỉ tên + trạng thái đang trong ca.
+async function handleAttendanceStaff(env) {
+  const { results } = await env.DB.prepare(
+    `SELECT u.id, u.username, u.full_name, u.role,
+            CASE WHEN u.pin IS NOT NULL AND u.pin != '' THEN 1 ELSE 0 END AS has_pin,
+            a.check_in_at
+     FROM users u
+     LEFT JOIN attendance a ON a.user_id = u.id AND a.check_out_at IS NULL
+     ORDER BY u.id`
+  ).all();
+  return json(results.map((r) => ({
+    id: r.id,
+    name: r.full_name || r.username,
+    role: r.role,
+    has_pin: !!r.has_pin,
+    checked_in: !!r.check_in_at,
+    check_in_at: r.check_in_at ? r.check_in_at + "Z" : null,
+  })));
+}
+
+// Check-in/out bằng PIN — 1 row/ca: in = insert, out = set check_out_at
+async function handleAttendanceCheck(env, body) {
+  const userId = Number(body?.user_id);
+  const pin = String(body?.pin ?? "").trim();
+  const action = body?.action;
+  if (!userId || (action !== "in" && action !== "out")) {
+    return json({ message: "Thi\u1EBFu user_id/action" }, 400);
+  }
+  const user = await env.DB.prepare(
+    "SELECT id, username, full_name, pin FROM users WHERE id = ?"
+  ).bind(userId).first();
+  if (!user) return json({ message: "Kh\xF4ng t\xECm th\u1EA5y nh\xE2n vi\xEAn" }, 404);
+  if (!user.pin) return json({ message: "Ch\u01B0a \u0111\u1EB7t PIN — nh\u1EDD qu\u1EA3n l\xFD c\u1EA5p PIN tr\u01B0\u1EDBc" }, 400);
+  if (user.pin !== pin) return json({ message: "Sai PIN" }, 403);
+
+  const open = await env.DB.prepare(
+    "SELECT id, check_in_at FROM attendance WHERE user_id = ? AND check_out_at IS NULL ORDER BY check_in_at DESC LIMIT 1"
+  ).bind(userId).first();
+  const now = new Date().toISOString();
+  const name = user.full_name || user.username;
+
+  if (action === "in") {
+    if (open) {
+      return json({ message: `${name} \u0111ang trong ca t\u1EEB ${open.check_in_at}` }, 400);
+    }
+    await env.DB.prepare(
+      "INSERT INTO attendance (user_id, check_in_at, note) VALUES (?, ?, ?)"
+    ).bind(userId, now, body.note ?? null).run();
+    return json({ ok: true, status: "in", name, check_in_at: now });
+  }
+  if (!open) {
+    return json({ message: `${name} ch\u01B0a v\xE0o ca` }, 400);
+  }
+  // synced_at = NULL → sync loop s\u1EBD \u0111\u1EA9y l\u1EA1i b\u1EA3n c\u00F3 check_out
+  await env.DB.prepare(
+    "UPDATE attendance SET check_out_at = ?, synced_at = NULL WHERE id = ?"
+  ).bind(now, open.id).run();
+  const hours = (new Date(now) - new Date(open.check_in_at)) / 3600000;
+  return json({
+    ok: true, status: "out", name,
+    check_in_at: open.check_in_at, check_out_at: now,
+    hours: Math.round(hours * 100) / 100,
+  });
+}
+
+// Báo cáo chấm công cho admin — ?from=YYYY-MM-DD&to=YYYY-MM-DD
+async function handleAdminAttendance(env, from, to) {
+  const params = [];
+  let where = "1=1";
+  if (from && /^\d{4}-\d{2}-\d{2}$/.test(from)) {
+    where += " AND a.check_in_at >= ?";
+    params.push(from + "T00:00:00");
+  }
+  if (to && /^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    where += " AND a.check_in_at <= ?";
+    params.push(to + "T23:59:59.999");
+  }
+  const { results } = await env.DB.prepare(
+    `SELECT a.id, a.user_id, a.check_in_at, a.check_out_at, a.note,
+            COALESCE(u.full_name, u.username) AS name
+     FROM attendance a LEFT JOIN users u ON u.id = a.user_id
+     WHERE ${where}
+     ORDER BY a.check_in_at DESC LIMIT 1000`
+  ).bind(...params).all();
+  return json(results.map((r) => ({
+    ...r,
+    check_in_at: r.check_in_at ? r.check_in_at + "Z" : null,
+    check_out_at: r.check_out_at ? r.check_out_at + "Z" : null,
+  })));
+}
+
 async function handleAdminAddProduct(env, body) {
   if (!body.name || body.price === void 0 || body.price === null || !body.category_id) {
     return json({ message: "name, price, category_id l\xE0 b\u1EAFt bu\u1ED9c" }, 400);
@@ -3223,6 +3342,27 @@ var worker_default = {
         return json({ error: String(err) }, 500);
       }
     }
+    // ---- Chấm công ----
+    if (url.pathname === "/api/attendance/staff" && request.method === "GET") {
+      return await handleAttendanceStaff(env);
+    }
+    if (url.pathname === "/api/attendance/check" && request.method === "POST") {
+      try {
+        return await handleAttendanceCheck(env, await request.json());
+      } catch (err) {
+        return json({ error: String(err) }, 500);
+      }
+    }
+    if (url.pathname === "/api/admin/attendance" && request.method === "GET") {
+      const auth = await requireAuth(env, request);
+      const denied = requireRole(auth, ["admin"]);
+      if (denied) return denied;
+      try {
+        return await handleAdminAttendance(env, url.searchParams.get("from"), url.searchParams.get("to"));
+      } catch (err) {
+        return json({ error: String(err) }, 500);
+      }
+    }
     if (url.pathname === "/api/admin/products" && request.method === "POST") {
       const auth = await requireAuth(env, request);
       const denied = requireRole(auth, ["admin"]);
@@ -3576,6 +3716,17 @@ async function ensureHubSchema(env) {
       UNIQUE(store_id, local_id)
     )`
   ).run();
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS hub_attendance (
+      store_id TEXT NOT NULL,
+      local_id INTEGER NOT NULL,
+      user_name TEXT,
+      check_in_at TEXT,
+      check_out_at TEXT,
+      synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(store_id, local_id)
+    )`
+  ).run();
 }
 
 async function requireHubStore(env, request) {
@@ -3622,7 +3773,7 @@ async function handleHubListStores(env) {
 async function handleHubPush(env, storeId, body) {
   await ensureHubSchema(env);
   const now = new Date().toISOString();
-  let orders = 0, products = 0, categories = 0, tables = 0;
+  let orders = 0, products = 0, categories = 0, tables = 0, attendance = 0;
 
   const orderRows = Array.isArray(body?.orders) ? body.orders : [];
   for (const o of orderRows) {
@@ -3693,6 +3844,22 @@ async function handleHubPush(env, storeId, body) {
     tables++;
   }
 
+  const attRows = Array.isArray(body?.attendance) ? body.attendance : [];
+  for (const a of attRows) {
+    if (a?.local_id == null) continue;
+    await env.DB.prepare(
+      `INSERT INTO hub_attendance (store_id, local_id, user_name, check_in_at, check_out_at, synced_at)
+       VALUES (?,?,?,?,?,?)
+       ON CONFLICT(store_id, local_id) DO UPDATE SET
+        user_name=excluded.user_name, check_in_at=excluded.check_in_at,
+        check_out_at=excluded.check_out_at, synced_at=excluded.synced_at`
+    ).bind(
+      storeId, a.local_id, a.user_name || null,
+      a.check_in_at || null, a.check_out_at || null, now
+    ).run();
+    attendance++;
+  }
+
   // Xoá catalog bị xoá ở quán (replace semantics) — chỉ khi payload gửi full list
   if (body?.full_catalog) {
     const wipeNotIn = async (table, ids) => {
@@ -3711,9 +3878,9 @@ async function handleHubPush(env, storeId, body) {
 
   await env.DB.prepare(
     "UPDATE hub_stores SET last_sync_at = ?, last_sync_detail = ? WHERE store_id = ?"
-  ).bind(now, `${orders} đơn, ${products} món, ${categories} danh mục, ${tables} bàn`, storeId).run();
+  ).bind(now, `${orders} đơn, ${products} món, ${categories} danh mục, ${tables} bàn, ${attendance} chấm công`, storeId).run();
 
-  return json({ ok: true, received: { orders, products, categories, tables } });
+  return json({ ok: true, received: { orders, products, categories, tables, attendance } });
 }
 
 async function handleHubReport(env, date) {
@@ -3735,11 +3902,20 @@ async function handleHubReport(env, date) {
        SUM(CASE WHEN status = 'completed' OR status = 'paid' THEN total ELSE 0 END) AS revenue
      FROM hub_orders GROUP BY store_id`
   ).all();
+  // Giờ công hôm nay của từng quán (chỉ ca đã tan ca)
+  const attToday = await env.DB.prepare(
+    `SELECT store_id, COUNT(*) AS shifts,
+       SUM((julianday(check_out_at) - julianday(check_in_at)) * 24.0) AS hours
+     FROM hub_attendance
+     WHERE check_out_at IS NOT NULL AND substr(check_in_at, 1, 10) = ?
+     GROUP BY store_id`
+  ).bind(day).all();
   return json({
     date: day,
     stores: stores.results || [],
     today: perStore.results || [],
     all_time: totals.results || [],
+    attendance_today: attToday.results || [],
   });
 }
 

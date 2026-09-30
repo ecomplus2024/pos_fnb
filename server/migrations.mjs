@@ -72,6 +72,27 @@ async function migrate(db) {
     console.log("[db] +order_item_toppings.quantity");
   }
 
+  // users.pin — mã 4 số để chấm công trên máy POS chung
+  const userCols = await columnNames(db, "users");
+  if (!userCols.includes("pin")) {
+    db.exec("ALTER TABLE users ADD COLUMN pin TEXT");
+    console.log("[db] +users.pin");
+  }
+
+  // Chấm công: 1 row = 1 ca (check_in_at bắt đầu, check_out_at kết thúc)
+  // synced_at: đánh dấu đã đẩy lên hub (giống orders)
+  db.exec(`CREATE TABLE IF NOT EXISTS attendance (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    check_in_at TEXT NOT NULL,
+    check_out_at TEXT,
+    note TEXT,
+    synced_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  )`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_attendance_user ON attendance(user_id, check_in_at)`);
+
   // Trigger giữ updated_at cho sync — chỉ chạy khi synced_at KHÔNG đổi
   // (mark synced_at không kích trigger → tránh vòng lặp re-push)
   db.exec(`CREATE TRIGGER IF NOT EXISTS trg_orders_touch

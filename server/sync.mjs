@@ -55,6 +55,17 @@ async function collectOrders(db) {
   return orders;
 }
 
+async function collectAttendance(db) {
+  const { results } = await db.prepare(
+    `SELECT a.id AS local_id, COALESCE(u.full_name, u.username) AS user_name,
+            a.check_in_at, a.check_out_at
+     FROM attendance a LEFT JOIN users u ON u.id = a.user_id
+     WHERE a.synced_at IS NULL
+     ORDER BY a.id LIMIT ${PUSH_BATCH}`
+  ).all().catch(() => ({ results: [] }));
+  return results;
+}
+
 async function collectCatalog(db) {
   const categories = (await db.prepare(
     "SELECT id AS local_id, name, sort_order, production_unit FROM categories"
@@ -87,10 +98,12 @@ async function syncOnce(db) {
 
     const orders = await collectOrders(db);
     const catalog = await collectCatalog(db);
+    const attendance = await collectAttendance(db);
     const payload = {
       store_id: hub.store_id,
       full_catalog: true,
       orders,
+      attendance,
       ...catalog,
     };
 
@@ -113,7 +126,12 @@ async function syncOnce(db) {
           "UPDATE orders SET synced_at = ? WHERE id = ?"
         ).bind(now, o.local_id).run();
       }
-      lastStatus = { ok: true, at: now, detail: `đẩy ${orders.length} đơn + catalog (${catalog.products.length} món)` };
+      for (const a of attendance) {
+        await db.prepare(
+          "UPDATE attendance SET synced_at = ? WHERE id = ?"
+        ).bind(now, a.local_id).run();
+      }
+      lastStatus = { ok: true, at: now, detail: `đẩy ${orders.length} đơn + ${attendance.length} chấm công + catalog (${catalog.products.length} món)` };
     }
     await setSyncStatusSetting(db, lastStatus);
   } catch (err) {
