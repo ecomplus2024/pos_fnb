@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "print-fix-1";
+const APP_BUILD = "kiosk-today-1";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -8579,9 +8579,19 @@ function AttendanceView() {
                 {s.role === "admin" ? "Quản lý" : s.role === "kitchen" ? "Bếp" : "Order"}
               </div>
               {s.checked_in ? (
-                <div className="mt-3 flex items-center gap-1.5 text-white font-black text-sm">
-                  <span className="w-2 h-2 rounded-full bg-white animate-pulse"></span>
-                  Đang làm {s.check_in_at ? fmtElapsed(s.check_in_at) : ""}
+                <div className="mt-3 text-white">
+                  <div className="flex items-center gap-1.5 font-black text-sm">
+                    <span className="w-2 h-2 rounded-full bg-white animate-pulse"></span>
+                    Đang làm {s.check_in_at ? fmtElapsed(s.check_in_at) : ""}
+                  </div>
+                  {s.check_in_at && (
+                    <div className="text-[11px] font-bold text-emerald-100 mt-0.5">Vào lúc {fmtTime(s.check_in_at)}</div>
+                  )}
+                </div>
+              ) : s.today ? (
+                <div className="mt-3 text-sm">
+                  <div className="text-gray-600 font-bold">{fmtTime(s.today.in)} → {fmtTime(s.today.out)}</div>
+                  <div className="text-emerald-700 font-black text-xs mt-0.5">Hôm nay: {s.today.hours.toFixed(1)}h</div>
                 </div>
               ) : (
                 <div className="mt-3 text-gray-400 font-bold text-sm">Ngoài ca</div>

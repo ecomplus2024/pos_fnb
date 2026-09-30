@@ -2242,12 +2242,33 @@ async function handleAttendanceStaff(env) {
      WHERE e.active = 1
      ORDER BY e.name`
   ).all();
-  return json(results.map((r) => ({
-    id: r.id,
-    name: r.name,
-    checked_in: !!r.check_in_at,
-    check_in_at: isoTs(r.check_in_at),
-  })));
+  // Ca đã hoàn tất trong ngày hôm nay (theo giờ local của server)
+  const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+  const nextDay = new Date(dayStart.getTime() + 86400000);
+  const { results: doneRows } = await env.DB.prepare(
+    `SELECT user_id, check_in_at, check_out_at FROM attendance
+     WHERE check_out_at IS NOT NULL
+       AND REPLACE(check_in_at, ' ', 'T') >= ? AND REPLACE(check_in_at, ' ', 'T') < ?`
+  ).bind(dayStart.toISOString(), nextDay.toISOString()).all();
+  const todayByUser = new Map();
+  for (const r of doneRows) {
+    const ci = isoTs(r.check_in_at), co = isoTs(r.check_out_at);
+    const cur = todayByUser.get(r.user_id) || { first_in: ci, last_out: co, hours: 0 };
+    if (ci < cur.first_in) cur.first_in = ci;
+    if (co > cur.last_out) cur.last_out = co;
+    cur.hours += (new Date(co) - new Date(ci)) / 3600000;
+    todayByUser.set(r.user_id, cur);
+  }
+  return json(results.map((r) => {
+    const t = todayByUser.get(r.id);
+    return {
+      id: r.id,
+      name: r.name,
+      checked_in: !!r.check_in_at,
+      check_in_at: isoTs(r.check_in_at),
+      today: t ? { in: isoTs(t.first_in), out: isoTs(t.last_out), hours: t.hours } : null,
+    };
+  }));
 }
 
 // Check-in/out — 1 row/ca: in = insert, out = set check_out_at
