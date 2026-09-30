@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "month-detail-1";
+const APP_BUILD = "print-fix-1";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -8886,6 +8886,24 @@ function AttendanceAdminView() {
     }
   };
 
+  // In phiếu qua cửa sổ riêng — copy CSS đã build, tránh lỗi trang trùng của hack visibility
+  const printSlip = () => {
+    const el = document.getElementById("pay-slip");
+    if (!el) { window.print(); return; }
+    const w = window.open("", "_blank", "width=420,height=640");
+    if (!w) { window.print(); return; }
+    const styles = Array.from(document.querySelectorAll("style,link[rel=stylesheet]"))
+      .map((s) => s.outerHTML).join("");
+    w.document.write(
+      `<!doctype html><html><head><meta charset="utf-8">${styles}` +
+      `<style>body{margin:0;padding:16px}#pay-slip{border-radius:0}</style></head>` +
+      `<body>${el.outerHTML}</body></html>`
+    );
+    w.document.close();
+    w.focus();
+    setTimeout(() => { w.print(); w.close(); }, 350);
+  };
+
   const delSlip = async (id) => {
     if (!window.confirm("Xóa phiếu này?")) return;
     try {
@@ -9453,13 +9471,13 @@ function AttendanceAdminView() {
                 className="flex-1 px-3 py-2 bg-white rounded-xl text-sm font-black text-gray-600">Đóng</button>
               <button onClick={saveSlip}
                 className="flex-1 px-3 py-2 bg-emerald-600 text-white rounded-xl text-sm font-black">Lưu phiếu</button>
-              <button onClick={() => window.print()}
+              <button onClick={printSlip}
                 className="flex-1 px-3 py-2 bg-slate-800 text-white rounded-xl text-sm font-black">In / PDF</button>
             </div>
           </div>
         </div>
       )}
-      <style>{`@media print { body * { visibility: hidden } #pay-slip, #pay-slip * { visibility: visible } #pay-slip { position: absolute; left: 0; top: 0; width: 100% } }`}</style>
+      <style>{`@media print { body * { visibility: hidden; } #pay-slip, #pay-slip * { visibility: visible; } #pay-slip { position: absolute; left: 0; top: 0; width: 100%; height: auto; } body { height: auto !important; } }`}</style>
     </div>
   );
 }
