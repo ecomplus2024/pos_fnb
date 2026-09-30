@@ -943,7 +943,7 @@ async function handlePublicItems(env, tableId) {
     size_name: it.size_name,
     notes: it.note,
     toppings: toppingsByItem.get(it.id) || [],
-    created_at: it.order_created_at ? it.order_created_at + "Z" : null
+    created_at: it.order_created_at ? it.order_created_at.replace(" ", "T") + "Z" : null
   })));
 }
 async function handleCreatePublicOrder(env, body) {
@@ -1343,7 +1343,7 @@ async function handleGetStaffCalls(env) {
     table_id: r.table_id,
     table_name: r.table_name,
     reason: r.reason,
-    created_at: r.created_at ? r.created_at + "Z" : null
+    created_at: r.created_at ? r.created_at.replace(" ", "T") + "Z" : null
   })));
 }
 async function handleResolveStaffCall(env, callId) {
@@ -1410,7 +1410,7 @@ async function handleCashierTakeawayList(env, statusParam) {
     total_amount: o.total,
     status: o.status,
     payment_method: o.payment_method,
-    created_at: o.created_at ? o.created_at + "Z" : null,
+    created_at: o.created_at ? o.created_at.replace(" ", "T") + "Z" : null,
     items: itemsByOrder.get(o.id) || []
   })));
 }
@@ -1622,7 +1622,7 @@ async function handleTakeawayItems(env, clientId) {
     size_name: it.size_name,
     notes: it.note,
     toppings: toppingsByItem.get(it.id) || [],
-    created_at: it.order_created_at ? it.order_created_at + "Z" : null
+    created_at: it.order_created_at ? it.order_created_at.replace(" ", "T") + "Z" : null
   })));
 }
 async function handleDeleteTakeawayItem(env, orderId, itemId, requestClientId) {
@@ -1955,7 +1955,7 @@ async function handleShipItems(env, clientId) {
     size_name: it.size_name,
     notes: it.note,
     toppings: toppingsByItem.get(it.id) || [],
-    created_at: it.order_created_at ? it.order_created_at + "Z" : null
+    created_at: it.order_created_at ? it.order_created_at.replace(" ", "T") + "Z" : null
   })));
 }
 async function handleDeleteShipItem(env, orderId, itemId, requestClientId) {
@@ -2054,7 +2054,7 @@ async function buildShipOrderDetail(env, orderId) {
     ship_voice_url: o.ship_voice_url,
     total_amount: o.total,
     status: o.status,
-    created_at: o.created_at ? o.created_at + "Z" : null,
+    created_at: o.created_at ? o.created_at.replace(" ", "T") + "Z" : null,
     items
   };
 }
