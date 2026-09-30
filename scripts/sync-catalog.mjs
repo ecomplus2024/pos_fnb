@@ -1,7 +1,7 @@
 // Đồng bộ catalog (bàn, danh mục, sản phẩm+sizes, topping links, ảnh) từ POS cũ sang POS mới.
-// Chạy: node scripts/sync-catalog.mjs
-const OLD = "https://daoche.itask.vn";
-const NEW = "https://quan.itask.vn";
+// Chạy: node scripts/sync-catalog.mjs <pos-cu> <pos-moi>
+const OLD = (process.argv[2] || "https://daoche.itask.vn").replace(/\/$/, "");
+const NEW = (process.argv[3] || "https://quan.itask.vn").replace(/\/$/, "");
 const CRED = { username: "admin", password: "admin123" };
 
 async function login(base) {
