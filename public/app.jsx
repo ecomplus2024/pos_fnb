@@ -838,7 +838,7 @@ function LoginView({ onLogin }) {
           >{loading ? "Đang đăng nhập..." : "Đăng Nhập"}</button>
         </form>
         <a href="/chamcong"
-          className="mt-4 w-full flex items-center justify-center gap-2 py-3 rounded-xl border-2 border-emerald-200 text-emerald-700 font-bold hover:bg-emerald-50 transition-all">
+          className="mt-4 w-full flex items-center justify-center gap-2 py-3 rounded-xl border-2 border-gray-200 text-emerald-700 font-bold hover:bg-gray-50 transition-all">
           <Icon name="clock" className="w-5 h-5" /> Chấm công vào/ra ca
         </a>
         <div className="mt-8 text-center text-gray-400 text-sm">© 2026 Premium POS System</div>
@@ -7441,7 +7441,7 @@ function AdminPanel({ embedded = false, onExit }) {
                       <td className="p-2 md:p-6 text-right">
                         <div className="flex justify-end items-center space-x-1 md:space-x-3">
                           <button onClick={() => editUserPin(u)} title="Đặt/xoá PIN chấm công"
-                            className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${u.has_pin ? "bg-green-100 text-green-700 hover:bg-green-200" : "bg-gray-100 text-gray-500 hover:bg-gray-200"}`}>
+                            className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${u.has_pin ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500 hover:bg-gray-200"}`}>
                             {u.has_pin ? "PIN ✓" : "Đặt PIN"}
                           </button>
                           <button onClick={() => deleteUser(u.id)} className="p-2 md:p-3 text-red-500 hover:bg-red-50 rounded-lg md:rounded-xl transition-all"><Icon name="trash-2" className="w-4 h-4 md:w-5 md:h-5" /></button>
@@ -7493,7 +7493,7 @@ function AdminPanel({ embedded = false, onExit }) {
                   <p className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3">Tổng giờ trong kỳ</p>
                   <div className="flex flex-wrap gap-2">
                     {names.map((n) => (
-                      <span key={n} className="px-4 py-2 bg-emerald-50 border border-emerald-200 rounded-xl font-black text-emerald-700 text-sm">
+                      <span key={n} className="px-4 py-2 bg-emerald-50 border border-transparent rounded-xl font-black text-emerald-700 text-sm">
                         {n}: {totals[n].toFixed(1)}h
                       </span>
                     ))}
@@ -8514,7 +8514,7 @@ function AttendanceView() {
         </div>
 
         {result && (
-          <div className={`mb-4 p-4 rounded-2xl font-bold text-center transition ${result.ok ? "bg-green-50 text-green-700 border border-green-200" : "bg-red-50 text-red-700 border border-red-200"}`}>
+          <div className={`mb-4 p-4 rounded-2xl font-bold text-center transition ${result.ok ? "bg-emerald-50 text-green-700 border border-transparent" : "bg-red-50 text-red-700 border border-red-200"}`}>
             {result.text}
           </div>
         )}
@@ -8524,7 +8524,7 @@ function AttendanceView() {
             <button key={s.id} onClick={() => toggle(s)} disabled={busyId === s.id}
               className={`p-5 rounded-2xl border-2 text-left transition-all active:scale-95 disabled:opacity-60 ${
                 s.checked_in
-                  ? "bg-green-500 border-green-400 shadow-lg shadow-green-200 text-white"
+                  ? "bg-emerald-600 border-transparent shadow-lg shadow-emerald-200 text-white"
                   : "bg-white border-gray-200 hover:border-gray-300 text-gray-800"
               }`}>
               <div className="flex items-center justify-between gap-2">
@@ -8533,7 +8533,7 @@ function AttendanceView() {
                   <span className={`w-4 h-4 border-2 rounded-full animate-spin flex-shrink-0 ${s.checked_in ? "border-white/40 border-t-white" : "border-gray-300 border-t-gray-600"}`} />
                 )}
               </div>
-              <div className={`text-[10px] font-bold uppercase tracking-wider mt-0.5 ${s.checked_in ? "text-green-100" : "text-gray-400"}`}>
+              <div className={`text-[10px] font-bold uppercase tracking-wider mt-0.5 ${s.checked_in ? "text-emerald-100" : "text-gray-400"}`}>
                 {s.role === "admin" ? "Quản lý" : s.role === "kitchen" ? "Bếp" : "Order"}
               </div>
               {s.checked_in ? (
