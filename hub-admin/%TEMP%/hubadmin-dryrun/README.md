@@ -1,1 +1,0 @@
-This folder contains the built output assets for the worker "pos-hub-admin" generated at 2026-09-30T06:17:28.331Z.
