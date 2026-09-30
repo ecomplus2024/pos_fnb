@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "att-admin-4";
+const APP_BUILD = "img-upload-1";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -6975,32 +6975,44 @@ function AdminPanel({ embedded = false, onExit }) {
     }
   };
 
-  // ---- Image upload (base64 data URL adapter — no R2 in demo) ----
+  // ---- Image upload: resize bằng canvas (max 800px JPEG) rồi gửi base64 ----
+  const resizeImage = (file) =>
+    new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 800;
+        let { width: w, height: h } = img;
+        if (w > MAX || h > MAX) {
+          const s = MAX / Math.max(w, h);
+          w = Math.round(w * s);
+          h = Math.round(h * s);
+        }
+        const c = document.createElement("canvas");
+        c.width = w;
+        c.height = h;
+        c.getContext("2d").drawImage(img, 0, 0, w, h);
+        URL.revokeObjectURL(img.src);
+        resolve(c.toDataURL("image/jpeg", 0.82));
+      };
+      img.onerror = () => reject(new Error("Không đọc được ảnh"));
+      img.src = URL.createObjectURL(file);
+    });
+
   const handleImageUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     try {
-      const base64 = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-          const result = ev.target.result;
-          if (typeof result === "string" && result.startsWith("data:image")) {
-            resolve(result.split(",")[1]);
-          } else {
-            reject(new Error("File không hợp lệ"));
-          }
-        };
-        reader.onerror = () => reject(new Error("Không đọc được file"));
-        reader.readAsDataURL(file);
-      });
+      const dataUrl = await resizeImage(file);
       const res = await apiAuth("/api/admin/upload", {
         method: "POST",
-        body: JSON.stringify({ image: base64, filename: file.name }),
+        body: JSON.stringify({ image: dataUrl.split(",")[1], filename: file.name }),
       });
       setProductForm((prev) => ({ ...prev, image_url: res.url }));
       showToast("Đã tải lên ảnh");
     } catch (err) {
       alert("Lỗi upload ảnh: " + err.message);
+    } finally {
+      e.target.value = "";
     }
   };
 

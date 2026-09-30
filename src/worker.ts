@@ -2896,7 +2896,7 @@ async function handleAdminPutSettings(env, request) {
   }
   return json({ message: "Settings updated", ok: true });
 }
-var UPLOAD_MAX_BYTES = 15e5;
+var UPLOAD_MAX_BYTES = 5e6; // 5MB — local lưu file thật, frontend resize trước khi gửi
 var ALLOWED_IMAGE_TYPES = {
   "image/png": "png",
   "image/jpeg": "jpg",
@@ -2930,8 +2930,18 @@ async function handleAdminUpload(env, request) {
   else if (bytes[0] === 82 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 70 && bytes[8] === 87 && bytes[9] === 69 && bytes[10] === 66 && bytes[11] === 80) detected = "image/webp";
   else return json({ message: "Ch\u1EC9 ch\u1EA5p nh\u1EADn file \u1EA3nh (png, jpg, gif, webp)" }, 400);
   const ext = ALLOWED_IMAGE_TYPES[detected] ?? "png";
-  const dataUrl = `data:${detected};base64,${btoa(String.fromCharCode(...bytes))}`;
-  return json({ url: dataUrl });
+  // Server local: lưu file thật vào DATA_DIR/uploads, trả URL /pos-uploads/<file>
+  // (env.saveUpload do server/app.mjs inject — Cloudflare không có → fallback data URL)
+  if (env.saveUpload) {
+    const url = await env.saveUpload(bytes, detected, ext);
+    return json({ url });
+  }
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return json({ url: `data:${detected};base64,${btoa(bin)}` });
 }
 function parseReportDates(url) {
   const today = (new Date()).toISOString().slice(0, 10);

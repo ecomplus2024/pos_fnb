@@ -49,10 +49,21 @@ const { default: worker } = await import(
   "data:text/javascript;charset=utf-8," + encodeURIComponent(workerSrc)
 );
 
+// Ảnh sản phẩm upload — lưu file thật cạnh pos.db, phục vụ qua /pos-uploads/<file>
+const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+const saveUpload = (bytes, mime, ext = "png") => {
+  const name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+  fs.writeFileSync(path.join(UPLOADS_DIR, name), Buffer.from(bytes));
+  return `/pos-uploads/${name}`;
+};
+const UPLOAD_MIME = { png: "image/png", jpg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
+
 const env = {
   DB: db,
   ASSETS: createAssets(path.join(ROOT, "public")),
   STORE_NAME: process.env.STORE_NAME || "POS",
+  saveUpload,
 };
 
 const ctx = {
@@ -321,6 +332,24 @@ http
       if (await d1Api(db, req, res, pathname, body, sendJson)) return;
     }
 
+
+    // Ảnh đã upload — file tĩnh trong DATA_DIR/uploads (basename chống path traversal)
+    if (req.method === "GET" && pathname.startsWith("/pos-uploads/")) {
+      const name = path.basename(decodeURIComponent(pathname.slice("/pos-uploads".length)));
+      const fp = path.join(UPLOADS_DIR, name);
+      if (name && fs.existsSync(fp)) {
+        const ext = name.split(".").pop().toLowerCase();
+        res.writeHead(200, {
+          "Content-Type": UPLOAD_MIME[ext] || "application/octet-stream",
+          "Cache-Control": "public, max-age=31536000, immutable",
+          "Access-Control-Allow-Origin": "*",
+        });
+        fs.createReadStream(fp).pipe(res);
+      } else {
+        sendJson(res, { message: "Not found" }, 404);
+      }
+      return;
+    }
 
     // SSE endpoint — đặt trước worker (worker không biết route này)
     if (req.method === "GET" && pathname === "/api/events") {
