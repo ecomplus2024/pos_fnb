@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "img-upload-1";
+const APP_BUILD = "img-upload-2";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -8528,11 +8528,8 @@ function AttendanceView() {
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
         flash(false, data.message || data.error || `Lỗi ${r.status}`);
-      } else {
-        flash(true, data.status === "in"
-          ? `${data.name} vào ca lúc ${fmtTime(data.check_in_at)}`
-          : `${data.name} tan ca — ${data.hours}h`);
       }
+      // Thành công thì thẻ tự đổi màu — không cần thông báo
     } catch {
       flash(false, "Không kết nối được server");
     }
