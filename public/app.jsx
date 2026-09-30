@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "img-upload-2";
+const APP_BUILD = "month-detail-1";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -8630,6 +8630,7 @@ function AttendanceAdminView() {
   const [userModal, setUserModal] = useState(null); // null | { id?, full_name, username, password, role, pin, hourly_rate }
   const [monthPeriod, setMonthPeriod] = useState(todayD.slice(0, 7));
   const [monthRows, setMonthRows] = useState(null);
+  const [monthUser, setMonthUser] = useState(null); // { name, user_id } — đang xem chi tiết bảng công
   const [slips, setSlips] = useState([]);
   const [payForm, setPayForm] = useState({ user_id: "", period: todayD.slice(0, 7), hours: "", rate: "", bonus: "0", penalty: "0", note: "" });
   const [slipView, setSlipView] = useState(null); // phiếu đang preview
@@ -8703,6 +8704,7 @@ function AttendanceAdminView() {
       setEditing(null);
       setMsg({ text: "Đã lưu", error: false });
       load();
+      loadMonth();
     } catch (e) {
       setMsg({ text: e.message, error: true });
     }
@@ -8715,6 +8717,7 @@ function AttendanceAdminView() {
         body: JSON.stringify({ check_out_at: new Date().toISOString() }),
       });
       load();
+      loadMonth();
     } catch (e) {
       setMsg({ text: e.message, error: true });
     }
@@ -8725,6 +8728,7 @@ function AttendanceAdminView() {
     try {
       await call(`/api/admin/attendance/${id}`, { method: "DELETE" });
       load();
+      loadMonth();
     } catch (e) {
       setMsg({ text: e.message, error: true });
     }
@@ -8754,6 +8758,7 @@ function AttendanceAdminView() {
       setAddingShift(null);
       setMsg({ text: "Đã thêm ca", error: false });
       load();
+      loadMonth();
     } catch (e) {
       setMsg({ text: e.message, error: true });
     }
@@ -8957,7 +8962,7 @@ function AttendanceAdminView() {
 
         <div className="flex gap-2 flex-wrap">
           {[["shifts", "Ca làm"], ["staff", "Nhân viên"], ["month", "Bảng công"], ["payroll", "Phiếu lương"]].map(([k, l]) => (
-            <button key={k} onClick={() => setTab(k)}
+            <button key={k} onClick={() => { setTab(k); if (k === "month") setMonthUser(null); setEditing(null); }}
               className={`px-4 py-2 rounded-xl text-sm font-black transition ${tab === k ? "bg-emerald-600 text-white shadow-lg" : "bg-white text-gray-600 border border-gray-200"}`}>
               {l}
             </button>
@@ -9136,14 +9141,15 @@ function AttendanceAdminView() {
         )}
 
         {/* ===== Tab Bảng công ===== */}
-        {tab === "month" && (
+        {tab === "month" && !monthUser && (
           <div className="bg-white rounded-2xl border border-gray-200 p-5">
             <div className="flex items-end gap-3 mb-4">
               <div>
                 <p className="text-xs font-black text-gray-400 uppercase tracking-widest mb-1">Tháng</p>
-                <input type="month" value={monthPeriod} onChange={(e) => setMonthPeriod(e.target.value)}
+                <input type="month" value={monthPeriod} onChange={(e) => { setMonthPeriod(e.target.value); setMonthUser(null); }}
                   className="px-3 py-2 border rounded-xl text-sm font-bold" />
               </div>
+              <p className="text-xs text-gray-400 font-medium pb-2">Bấm vào nhân viên để xem &amp; chỉnh sửa từng ca</p>
             </div>
             <table className="w-full text-sm">
               <thead>
@@ -9152,6 +9158,7 @@ function AttendanceAdminView() {
                   <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest">Số ngày</th>
                   <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest">Số ca</th>
                   <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest text-right">Tổng giờ</th>
+                  <th className="p-3"></th>
                 </tr>
               </thead>
               <tbody>
@@ -9159,24 +9166,26 @@ function AttendanceAdminView() {
                   const byUser = {};
                   for (const r of monthRows || []) {
                     const k = r.name || "?";
-                    if (!byUser[k]) byUser[k] = { days: new Set(), shifts: 0, hours: 0 };
+                    if (!byUser[k]) byUser[k] = { days: new Set(), shifts: 0, hours: 0, user_id: r.user_id };
                     byUser[k].shifts++;
                     if (r.check_in_at) byUser[k].days.add(String(r.check_in_at).slice(0, 10));
                     if (r.check_out_at) byUser[k].hours += (new Date(r.check_out_at) - new Date(r.check_in_at)) / 3600000;
                   }
                   const entries = Object.entries(byUser);
                   if (!entries.length && monthRows !== null) {
-                    return <tr><td colSpan={4} className="p-8 text-center text-gray-400">Không có ca nào trong tháng</td></tr>;
+                    return <tr><td colSpan={5} className="p-8 text-center text-gray-400">Không có ca nào trong tháng</td></tr>;
                   }
                   if (monthRows === null) {
-                    return <tr><td colSpan={4} className="p-8 text-center text-gray-400">Đang tải...</td></tr>;
+                    return <tr><td colSpan={5} className="p-8 text-center text-gray-400">Đang tải...</td></tr>;
                   }
                   return entries.map(([n, v]) => (
-                    <tr key={n} className="border-b border-gray-50">
-                      <td className="p-3 font-bold text-gray-800">{n}</td>
+                    <tr key={n} onClick={() => setMonthUser({ name: n, user_id: v.user_id })}
+                      className="border-b border-gray-50 cursor-pointer hover:bg-emerald-50/50 transition">
+                      <td className="p-3 font-bold text-emerald-700">{n}</td>
                       <td className="p-3">{v.days.size}</td>
                       <td className="p-3">{v.shifts}</td>
                       <td className="p-3 text-right font-black text-emerald-700">{v.hours.toFixed(1)}h</td>
+                      <td className="p-3 text-right text-gray-300 font-black">›</td>
                     </tr>
                   ));
                 })()}
@@ -9184,6 +9193,102 @@ function AttendanceAdminView() {
             </table>
           </div>
         )}
+
+        {/* ===== Bảng công chi tiết 1 nhân viên — sửa/xóa/thêm ca ===== */}
+        {tab === "month" && monthUser && (() => {
+          const shifts = (monthRows || [])
+            .filter((r) => (r.name || "?") === monthUser.name)
+            .sort((a, b) => String(a.check_in_at).localeCompare(String(b.check_in_at)));
+          const totalH = shifts.reduce((a, r) => a + (r.check_out_at ? (new Date(r.check_out_at) - new Date(r.check_in_at)) / 3600000 : 0), 0);
+          const days = new Set(shifts.map((r) => String(r.check_in_at || "").slice(0, 10))).size;
+          return (
+            <div className="bg-white rounded-2xl border border-gray-200 p-5">
+              <div className="flex items-center gap-3 mb-4 flex-wrap">
+                <button onClick={() => { setMonthUser(null); setEditing(null); }}
+                  className="px-3 py-2 bg-gray-100 rounded-xl text-xs font-black text-gray-600 hover:bg-gray-200 transition">
+                  ← Bảng công
+                </button>
+                <div className="flex-1">
+                  <p className="font-black text-gray-800">{monthUser.name}</p>
+                  <p className="text-xs text-gray-400 font-bold">Tháng {monthPeriod} · {days} ngày · {shifts.length} ca · {totalH.toFixed(1)}h</p>
+                </div>
+                <button onClick={() => setAddingShift({ user_id: monthUser.user_id || usersList.find((u) => u.name === monthUser.name)?.id || "", ci: "", co: "" })}
+                  className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black uppercase tracking-wider hover:bg-emerald-700 transition">
+                  + Thêm ca
+                </button>
+              </div>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-gray-50 text-left">
+                    <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest">Ngày</th>
+                    <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest">Vào ca</th>
+                    <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest">Tan ca</th>
+                    <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest text-right">Giờ công</th>
+                    <th className="p-3"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shifts.map((r) => {
+                    const hrs = r.check_out_at ? (new Date(r.check_out_at) - new Date(r.check_in_at)) / 3600000 : null;
+                    const isEd = editing?.id === r.id;
+                    return (
+                      <tr key={r.id} className="border-b border-gray-50 align-top">
+                        <td className="p-3 font-bold text-gray-800 whitespace-nowrap">
+                          {r.check_in_at ? new Date(r.check_in_at).toLocaleDateString("vi-VN", { weekday: "short", day: "2-digit", month: "2-digit" }) : "—"}
+                        </td>
+                        <td className="p-3 text-gray-600 font-medium">
+                          {isEd
+                            ? <input type="datetime-local" value={editing.ci}
+                                onChange={(e) => setEditing({ ...editing, ci: e.target.value })}
+                                className="px-2 py-1 border rounded-lg text-xs" />
+                            : fmtD(r.check_in_at)}
+                        </td>
+                        <td className="p-3 text-gray-600 font-medium">
+                          {isEd
+                            ? <input type="datetime-local" value={editing.co}
+                                onChange={(e) => setEditing({ ...editing, co: e.target.value })}
+                                className="px-2 py-1 border rounded-lg text-xs" />
+                            : r.check_out_at
+                              ? fmtD(r.check_out_at)
+                              : <span className="text-emerald-600 font-black text-xs">● Đang trong ca</span>}
+                        </td>
+                        <td className="p-3 text-right font-black text-gray-800">
+                          {hrs != null ? `${hrs.toFixed(1)}h` : "—"}
+                        </td>
+                        <td className="p-3">
+                          <div className="flex justify-end gap-1">
+                            {isEd ? (
+                              <>
+                                <button onClick={saveEdit}
+                                  className="px-3 py-1.5 rounded-lg text-xs font-black bg-emerald-600 text-white hover:bg-emerald-700">Lưu</button>
+                                <button onClick={() => setEditing(null)}
+                                  className="px-3 py-1.5 rounded-lg text-xs font-black bg-gray-200 text-gray-600">Hủy</button>
+                              </>
+                            ) : (
+                              <>
+                                {!r.check_out_at && (
+                                  <button onClick={() => closeShift(r.id)}
+                                    className="px-3 py-1.5 rounded-lg text-xs font-black bg-amber-100 text-amber-700 hover:bg-amber-200">Tan ca</button>
+                                )}
+                                <button onClick={() => setEditing({ id: r.id, ci: attLocalInput(r.check_in_at), co: attLocalInput(r.check_out_at), note: r.note || "" })}
+                                  className="px-3 py-1.5 rounded-lg text-xs font-black bg-gray-100 text-gray-600 hover:bg-gray-200">Sửa</button>
+                                <button onClick={() => delRow(r.id)}
+                                  className="px-3 py-1.5 rounded-lg text-xs font-black bg-red-50 text-red-500 hover:bg-red-100">Xóa</button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {shifts.length === 0 && (
+                    <tr><td colSpan={5} className="p-8 text-center text-gray-400">Không có ca nào trong tháng</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          );
+        })()}
 
         {/* ===== Tab Phiếu lương ===== */}
         {tab === "payroll" && (
