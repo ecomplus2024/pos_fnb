@@ -199,7 +199,7 @@ function bindMain() {
 
 async function loadUsers() {
   try {
-    users = await api("/api/admin/users");
+    users = await api("/api/admin/employees");
     renderTab();
   } catch (e) { toast(e.message, false); }
 }
@@ -268,14 +268,14 @@ function bindShifts() {
   }));
 }
 function openShiftModal(r) {
-  const staffUsers = users.filter(u => u.role !== "admin" || true);
+  const staffUsers = users.filter(u => u.active !== 0);
   $("modal-root").innerHTML = `
   <div class="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-40">
     <div class="bg-white rounded-2xl p-6 w-full max-w-sm">
       <h3 class="font-bold text-slate-800 mb-4">${r ? "Sửa ca" : "Thêm ca thủ công"}</h3>
       ${r ? "" : `<label class="text-xs text-slate-500">Nhân viên</label>
         <select id="m-user" class="w-full border rounded-xl px-3 py-2 mb-3">
-          ${staffUsers.map(u=>`<option value="${u.id}">${esc(u.full_name || u.username)}</option>`).join("")}
+          ${staffUsers.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join("")}
         </select>`}
       <label class="text-xs text-slate-500">Giờ vào</label>
       <input id="m-in" type="datetime-local" value="${r ? isoToLocalInput(r.check_in_at) : ""}" class="w-full border rounded-xl px-3 py-2 mb-3"/>
@@ -304,30 +304,32 @@ function openShiftModal(r) {
   });
 }
 
-// ---------- Tab Nhân viên ----------
+// ---------- Tab Nhân viên (employees — chỉ tên + lương/giờ) ----------
 function staffHtml() {
   return `
   <div class="bg-white rounded-2xl shadow p-5">
     <div class="flex justify-between items-center mb-4">
-      <h2 class="font-semibold text-slate-700">Tài khoản nhân viên</h2>
-      <button id="btn-add-user" class="bg-emerald-600 text-white rounded-xl px-4 py-2 text-sm font-semibold">+ Thêm</button>
+      <div>
+        <h2 class="font-semibold text-slate-700">Nhân viên chấm công</h2>
+        <p class="text-xs text-slate-400 mt-1">Chỉ cần tên — thẻ hiện trên màn chấm công tại quán, không phải tài khoản đăng nhập.</p>
+      </div>
+      <button id="btn-add-user" class="bg-emerald-600 text-white rounded-xl px-4 py-2 text-sm font-semibold whitespace-nowrap">+ Thêm</button>
     </div>
     <div class="overflow-x-auto">
     <table class="w-full text-sm">
       <thead><tr class="text-left text-slate-400 border-b">
-        <th class="py-2">Tên</th><th>Username</th><th>Vai trò</th><th>PIN</th><th>Lương/giờ</th><th></th></tr></thead>
+        <th class="py-2">Mã</th><th>Tên</th><th class="text-right">Lương/giờ</th><th>Trạng thái</th><th></th></tr></thead>
       <tbody>${users.map(u => `
-        <tr class="border-b last:border-0">
-          <td class="py-2 font-medium">${esc(u.full_name || u.username)}</td>
-          <td>${esc(u.username)}</td>
-          <td>${esc(u.role)}</td>
-          <td>${u.has_pin ? "✓" : "—"}</td>
-          <td>${u.hourly_rate ? fmtMoney(u.hourly_rate) : "—"}</td>
+        <tr class="border-b last:border-0 ${u.active ? "" : "opacity-40"}">
+          <td class="py-2 text-xs text-slate-400 font-mono">#${u.id}</td>
+          <td class="py-2 font-medium">${esc(u.name)}</td>
+          <td class="text-right font-semibold">${u.hourly_rate ? fmtMoney(u.hourly_rate) : "—"}</td>
+          <td><button class="text-xs px-2 py-1 rounded-lg ${u.active ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-400"}" data-toggle-emp="${u.id}">${u.active ? "Đang dùng" : "Đã ẩn"}</button></td>
           <td class="text-right">
             <button class="text-blue-600 text-xs mr-2" data-edit-user="${u.id}">Sửa</button>
             <button class="text-red-500 text-xs" data-del-user="${u.id}">Xoá</button>
           </td>
-        </tr>`).join("") || `<tr><td colspan="6" class="py-6 text-center text-slate-400">Chưa có nhân viên</td></tr>`}
+        </tr>`).join("") || `<tr><td colspan="5" class="py-6 text-center text-slate-400">Chưa có nhân viên</td></tr>`}
       </tbody>
     </table></div>
   </div>`;
@@ -335,9 +337,14 @@ function staffHtml() {
 function bindStaff() {
   $("btn-add-user").addEventListener("click", () => openUserModal(null));
   document.querySelectorAll("[data-edit-user]").forEach(b => b.addEventListener("click", () => openUserModal(users.find(u => u.id == b.dataset.editUser))));
+  document.querySelectorAll("[data-toggle-emp]").forEach(b => b.addEventListener("click", async () => {
+    const u = users.find(x => x.id == b.dataset.toggleEmp);
+    try { await api(`/api/admin/employees/${u.id}`, { method: "PUT", body: JSON.stringify({ active: u.active ? 0 : 1 }) }); loadUsers(); }
+    catch (e) { toast(e.message, false); }
+  }));
   document.querySelectorAll("[data-del-user]").forEach(b => b.addEventListener("click", async () => {
-    if (!confirm("Xoá tài khoản này?")) return;
-    try { await api(`/api/admin/users/${b.dataset.delUser}`, { method: "DELETE" }); toast("Đã xoá"); loadUsers(); }
+    if (!confirm("Xoá/ẩn nhân viên này? (đã có ca chấm thì chỉ ẩn)")) return;
+    try { await api(`/api/admin/employees/${b.dataset.delUser}`, { method: "DELETE" }); toast("Đã xoá"); loadUsers(); }
     catch (e) { toast(e.message, false); }
   }));
 }
@@ -345,15 +352,11 @@ function openUserModal(u) {
   $("modal-root").innerHTML = `
   <div class="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-40">
     <div class="bg-white rounded-2xl p-6 w-full max-w-sm">
-      <h3 class="font-bold text-slate-800 mb-4">${u ? "Sửa tài khoản" : "Thêm tài khoản"}</h3>
-      <input id="u-name" class="w-full border rounded-xl px-3 py-2 mb-2" placeholder="Họ tên" value="${esc(u?.full_name || "")}"/>
-      <input id="u-username" class="w-full border rounded-xl px-3 py-2 mb-2" placeholder="Username đăng nhập" value="${esc(u?.username || "")}" ${u ? "disabled" : ""}/>
-      <input id="u-pass" type="password" class="w-full border rounded-xl px-3 py-2 mb-2" placeholder="${u ? "Đổi mật khẩu (để trống = giữ)" : "Mật khẩu"}"/>
-      <select id="u-role" class="w-full border rounded-xl px-3 py-2 mb-2">
-        ${["staff","kitchen","admin"].map(r=>`<option value="${r}" ${u?.role===r?"selected":""}>${r}</option>`).join("")}
-      </select>
-      <input id="u-pin" class="w-full border rounded-xl px-3 py-2 mb-2" placeholder="${u ? "PIN mới (để trống = giữ)" : "PIN chấm công 4-6 số (tuỳ chọn)"}"/>
-      <input id="u-rate" type="number" class="w-full border rounded-xl px-3 py-2 mb-4" placeholder="Lương theo giờ (đ)" value="${u?.hourly_rate || ""}"/>
+      <h3 class="font-bold text-slate-800 mb-4">${u ? "Sửa nhân viên #" + u.id : "Thêm nhân viên"}</h3>
+      <label class="text-xs text-slate-500">Tên nhân viên</label>
+      <input id="u-name" class="w-full border rounded-xl px-3 py-2 mb-2" placeholder="VD: Nguyễn Văn A" value="${esc(u?.name || "")}"/>
+      <label class="text-xs text-slate-500">Lương theo giờ (đ)</label>
+      <input id="u-rate" type="number" class="w-full border rounded-xl px-3 py-2 mb-4" placeholder="25000" value="${u?.hourly_rate || ""}"/>
       <div class="flex gap-2">
         <button id="u-cancel" class="flex-1 border rounded-xl py-2 text-sm">Huỷ</button>
         <button id="u-save" class="flex-1 bg-slate-800 text-white rounded-xl py-2 text-sm font-semibold">Lưu</button>
@@ -362,19 +365,11 @@ function openUserModal(u) {
   </div>`;
   $("u-cancel").addEventListener("click", () => $("modal-root").innerHTML = "");
   $("u-save").addEventListener("click", async () => {
-    const body = {
-      full_name: $("u-name").value.trim(),
-      role: $("u-role").value,
-      hourly_rate: +$("u-rate").value || 0,
-    };
-    if ($("u-pin").value.trim()) body.pin = $("u-pin").value.trim();
-    if ($("u-pass").value) body.password = $("u-pass").value;
+    const body = { name: $("u-name").value.trim(), hourly_rate: +$("u-rate").value || 0 };
+    if (!body.name) return toast("Nhập tên nhân viên", false);
     try {
-      if (u) await api(`/api/admin/users/${u.id}`, { method: "PUT", body: JSON.stringify(body) });
-      else {
-        if (!$("u-username").value.trim() || !$("u-pass").value) return toast("Cần username + mật khẩu", false);
-        await api("/api/admin/users", { method: "POST", body: JSON.stringify({ ...body, username: $("u-username").value.trim() }) });
-      }
+      if (u) await api(`/api/admin/employees/${u.id}`, { method: "PUT", body: JSON.stringify(body) });
+      else await api("/api/admin/employees", { method: "POST", body: JSON.stringify(body) });
       $("modal-root").innerHTML = ""; toast("Đã lưu"); loadUsers();
     } catch (e) { toast(e.message, false); }
   });
@@ -429,7 +424,7 @@ function payrollHtml() {
       <h2 class="font-semibold text-slate-700 mb-4">Tạo phiếu lương</h2>
       <label class="text-xs text-slate-500">Nhân viên</label>
       <select id="p-user" class="w-full border rounded-xl px-3 py-2 mb-2">
-        ${users.map(u=>`<option value="${u.id}">${esc(u.full_name || u.username)}</option>`).join("")}
+        ${users.filter(u=>u.active !== 0).map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join("")}
       </select>
       <label class="text-xs text-slate-500">Kỳ lương</label>
       <input id="p-period" type="month" value="${monthNow()}" class="w-full border rounded-xl px-3 py-2 mb-2"/>
@@ -466,32 +461,59 @@ function prefillRate() {
   const u = users.find(x => x.id == $("p-user")?.value);
   if (u?.hourly_rate && $("p-rate")) $("p-rate").value = u.hourly_rate;
 }
+let empShifts = []; // ca của nhân viên đang chọn trong kỳ — đi kèm phiếu
+async function fetchEmpShifts(u, period) {
+  const rows = await api(`/api/admin/attendance?from=${period}-01&to=${period}-31`);
+  return rows
+    .filter(r => r.user_id === u?.id || r.name === u?.name)
+    .map(r => ({
+      date: String(r.check_in_at || "").slice(0, 10),
+      in: r.check_in_at, out: r.check_out_at,
+      hours: r.check_out_at ? (new Date(r.check_out_at) - new Date(r.check_in_at)) / 3600000 : 0,
+    }))
+    .sort((a, b) => String(a.in).localeCompare(String(b.in)));
+}
 async function calcHours() {
   const p = $("p-period").value; if (!p) return toast("Chọn kỳ", false);
   const u = users.find(x => x.id == $("p-user").value);
   try {
-    const rows = await api(`/api/admin/attendance?from=${p}-01&to=${p}-31`);
-    const h = rows.filter(r => r.user_id === u?.id || r.name === (u?.full_name || u?.username))
-      .reduce((a,r) => a + hoursOf(r), 0);
+    empShifts = await fetchEmpShifts(u, p);
+    const h = empShifts.reduce((a, s) => a + s.hours, 0);
     $("p-hours").value = h.toFixed(1);
     toast(`Tổng ${h.toFixed(1)}h trong kỳ ${p}`);
   } catch (e) { toast(e.message, false); }
 }
 function slipData() {
   const u = users.find(x => x.id == $("p-user").value);
-  const name = u?.full_name || u?.username || "?";
+  const name = u?.name || "?";
   const hours = +$("p-hours").value || 0, rate = +$("p-rate").value || 0;
   const bonus = +$("p-bonus").value || 0, penalty = +$("p-penalty").value || 0;
   return { user_name: name, period: $("p-period").value, hours, rate, bonus, penalty,
-           total: Math.round(hours * rate + bonus - penalty), note: $("p-note").value.trim() };
+           total: Math.round(hours * rate + bonus - penalty), note: $("p-note").value.trim(),
+           shifts: empShifts };
 }
-function previewSlip() {
+async function previewSlip() {
+  const u = users.find(x => x.id == $("p-user").value);
+  if (!u || !$("p-period").value) return toast("Chọn nhân viên + kỳ", false);
+  try { empShifts = await fetchEmpShifts(u, $("p-period").value); } catch {}
   const d = slipData();
-  if (!d.user_name || !d.period) return toast("Chọn nhân viên + kỳ", false);
   $("slip-wrap").innerHTML = `
   <div class="bg-white rounded-2xl shadow p-6 max-w-md mx-auto" id="slip-preview">
     <h3 class="text-center font-bold text-lg text-slate-800">PHIẾU LƯƠNG — ${esc(d.period)}</h3>
     <p class="text-center text-xs text-slate-400 mb-4">${esc(S().name)}</p>
+    ${d.shifts?.length ? `
+    <table class="w-full text-xs mb-3">
+      <thead><tr class="border-b text-left text-slate-400">
+        <th class="py-1">Ngày</th><th>Vào</th><th>Ra</th><th class="text-right">Giờ</th></tr></thead>
+      <tbody>${d.shifts.map(s=>`
+        <tr class="border-b border-slate-50">
+          <td class="py-1">${esc(s.date ? s.date.slice(8,10) + "/" + s.date.slice(5,7) : "—")}</td>
+          <td>${s.in ? fmtTime(s.in) : "—"}</td>
+          <td>${s.out ? fmtTime(s.out) : "chưa tan"}</td>
+          <td class="text-right font-semibold">${s.hours.toFixed(1)}h</td>
+        </tr>`).join("")}
+      </tbody>
+    </table>` : ""}
     <table class="w-full text-sm">
       <tr class="border-b"><td class="py-2 text-slate-500">Nhân viên</td><td class="text-right font-medium">${esc(d.user_name)}</td></tr>
       <tr class="border-b"><td class="py-2 text-slate-500">Tổng giờ làm</td><td class="text-right">${d.hours}h</td></tr>
@@ -535,9 +557,10 @@ async function loadPayrolls() {
       $("p-hours").value = p.hours; $("p-rate").value = p.rate;
       $("p-bonus").value = p.bonus; $("p-penalty").value = p.penalty;
       $("p-note").value = p.note || "";
-      const u = users.find(x => (x.full_name || x.username) === p.user_name);
+      const u = users.find(x => x.name === p.user_name);
       if (u) $("p-user").value = u.id;
       $("p-period").value = p.period;
+      try { empShifts = JSON.parse(p.shifts_json || "[]"); } catch { empShifts = []; }
       previewSlip();
     }));
   } catch (e) { /* bảng chưa có trên server cũ — bỏ qua */ }

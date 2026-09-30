@@ -99,6 +99,29 @@ async function migrate(db) {
     synced_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`);
+  const payCols = db.prepare("PRAGMA table_info(payroll)").all().map((c) => c.name);
+  if (!payCols.includes("shifts_json")) {
+    db.exec("ALTER TABLE payroll ADD COLUMN shifts_json TEXT");
+    console.log("[db] +payroll.shifts_json");
+  }
+
+  // employees — nhân viên chấm công: CHỈ tên + lương/giờ, tách khỏi
+  // tài khoản đăng nhập (users). attendance.user_id trỏ sang employees.id.
+  db.exec(`CREATE TABLE IF NOT EXISTS employees (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    hourly_rate INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    synced_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+  // Migrate 1 lần: copy user staff/kitchen sang employees giữ nguyên id
+  // → các bản ghi attendance cũ (user_id) vẫn trỏ đúng nhân viên.
+  db.exec(`INSERT INTO employees (id, name, hourly_rate)
+    SELECT u.id, COALESCE(NULLIF(u.full_name, ''), u.username), COALESCE(u.hourly_rate, 0)
+    FROM users u
+    WHERE u.role != 'admin'
+      AND NOT EXISTS (SELECT 1 FROM employees e WHERE e.id = u.id)`);
 
   // Chấm công: 1 row = 1 ca (check_in_at bắt đầu, check_out_at kết thúc)
   // synced_at: đánh dấu đã đẩy lên hub (giống orders)

@@ -2235,17 +2235,16 @@ function isoTs(v) {
 // Không trả pin/password — chỉ tên + trạng thái đang trong ca.
 async function handleAttendanceStaff(env) {
   const { results } = await env.DB.prepare(
-    `SELECT u.id, u.username, u.full_name, u.role,
+    `SELECT e.id, e.name,
             a.check_in_at
-     FROM users u
-     LEFT JOIN attendance a ON a.user_id = u.id AND a.check_out_at IS NULL
-     WHERE COALESCE(u.hidden, 0) = 0
-     ORDER BY u.id`
+     FROM employees e
+     LEFT JOIN attendance a ON a.user_id = e.id AND a.check_out_at IS NULL
+     WHERE e.active = 1
+     ORDER BY e.name`
   ).all();
   return json(results.map((r) => ({
     id: r.id,
-    name: r.full_name || r.username,
-    role: r.role,
+    name: r.name,
     checked_in: !!r.check_in_at,
     check_in_at: isoTs(r.check_in_at),
   })));
@@ -2260,7 +2259,7 @@ async function handleAttendanceCheck(env, body) {
     return json({ message: "Thi\u1EBFu user_id/action" }, 400);
   }
   const user = await env.DB.prepare(
-    "SELECT id, username, full_name FROM users WHERE id = ?"
+    "SELECT id, name FROM employees WHERE id = ?"
   ).bind(userId).first();
   if (!user) return json({ message: "Kh\xF4ng t\xECm th\u1EA5y nh\xE2n vi\xEAn" }, 404);
 
@@ -2268,7 +2267,7 @@ async function handleAttendanceCheck(env, body) {
     "SELECT id, check_in_at FROM attendance WHERE user_id = ? AND check_out_at IS NULL ORDER BY check_in_at DESC LIMIT 1"
   ).bind(userId).first();
   const now = new Date().toISOString();
-  const name = user.full_name || user.username;
+  const name = user.name;
 
   if (action === "in") {
     if (open) {
@@ -2308,8 +2307,10 @@ async function handleAdminAttendance(env, from, to) {
   }
   const { results } = await env.DB.prepare(
     `SELECT a.id, a.user_id, a.check_in_at, a.check_out_at, a.note,
-            COALESCE(u.full_name, u.username) AS name
-     FROM attendance a LEFT JOIN users u ON u.id = a.user_id
+            COALESCE(e.name, u.full_name, u.username) AS name
+     FROM attendance a
+     LEFT JOIN employees e ON e.id = a.user_id
+     LEFT JOIN users u ON u.id = a.user_id
      WHERE ${where}
      ORDER BY a.check_in_at DESC LIMIT 1000`
   ).bind(...params).all();
@@ -2367,7 +2368,7 @@ async function handleAdminAttendanceCreate(env, body) {
   if (!userId || !ci || isNaN(ci.getTime())) {
     return json({ message: "c\u1EA7n user_id + check_in_at h\u1EE3p l\u1EC7" }, 400);
   }
-  const user = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(userId).first();
+  const user = await env.DB.prepare("SELECT id FROM employees WHERE id = ?").bind(userId).first();
   if (!user) return json({ message: "Kh\xF4ng t\xECm th\u1EA5y nh\xE2n vi\xEAn" }, 404);
   let co = null;
   if (body.check_out_at) {
@@ -2378,6 +2379,63 @@ async function handleAdminAttendanceCreate(env, body) {
     "INSERT INTO attendance (user_id, check_in_at, check_out_at, note) VALUES (?, ?, ?, ?) RETURNING id"
   ).bind(userId, ci.toISOString(), co, body.note ?? "nh\u1EADp tay").first();
   return json({ ok: true, id: r?.id }, 201);
+}
+
+// ---- Nhân viên chấm công (employees — không phải tài khoản đăng nhập) ----
+async function handleAdminGetEmployees(env) {
+  const { results } = await env.DB.prepare(
+    "SELECT id, name, hourly_rate, active FROM employees ORDER BY active DESC, name"
+  ).all();
+  return json(results);
+}
+async function handleAdminAddEmployee(env, body) {
+  const name = String(body?.name || "").trim();
+  if (!name) return json({ message: "Thi\u1EBFu t\xEAn nh\xE2n vi\xEAn" }, 400);
+  const r = await env.DB.prepare(
+    "INSERT INTO employees (name, hourly_rate) VALUES (?, ?) RETURNING id"
+  ).bind(name, Math.max(0, Math.round(Number(body.hourly_rate) || 0))).first();
+  return json({ ok: true, id: r?.id }, 201);
+}
+async function handleAdminEmployeeMutate(env, empId, request) {
+  const id = parseInt(empId, 10);
+  if (!id) return json({ message: "id kh\xF4ng h\u1EE3p l\u1EC7" }, 400);
+  const row = await env.DB.prepare("SELECT id FROM employees WHERE id = ?").bind(id).first();
+  if (!row) return json({ message: "Kh\xF4ng t\xECm th\u1EA5y nh\xE2n vi\xEAn" }, 404);
+
+  if (request.method === "DELETE") {
+    // Có lịch sử chấm công → chỉ ẩn (active=0) để giữ tên trong báo cáo;
+    // chưa chấm ca nào → xoá hẳn.
+    const used = await env.DB.prepare(
+      "SELECT id FROM attendance WHERE user_id = ? LIMIT 1"
+    ).bind(id).first();
+    if (used) {
+      await env.DB.prepare("UPDATE employees SET active = 0, synced_at = NULL WHERE id = ?").bind(id).run();
+    } else {
+      await env.DB.prepare("DELETE FROM employees WHERE id = ?").bind(id).run();
+    }
+    return json({ ok: true });
+  }
+
+  let body;
+  try { body = await request.json(); } catch { body = {}; }
+  const sets = [];
+  const params = [];
+  if (body.name !== undefined) {
+    const n = String(body.name).trim();
+    if (!n) return json({ message: "T\xEAn kh\xF4ng \u0111\u01B0\u1EE3c tr\u1ED1ng" }, 400);
+    sets.push("name = ?"); params.push(n);
+  }
+  if (body.hourly_rate !== undefined) {
+    sets.push("hourly_rate = ?"); params.push(Math.max(0, Math.round(Number(body.hourly_rate) || 0)));
+  }
+  if (body.active !== undefined) {
+    sets.push("active = ?"); params.push(body.active ? 1 : 0);
+  }
+  if (!sets.length) return json({ message: "kh\xF4ng c\xF3 g\xEC \u0111\u1EC3 s\u1EEDa" }, 400);
+  sets.push("synced_at = NULL");
+  params.push(id);
+  await env.DB.prepare(`UPDATE employees SET ${sets.join(", ")} WHERE id = ?`).bind(...params).run();
+  return json({ ok: true });
 }
 
 // ---- Phiếu lương ----
@@ -2395,13 +2453,14 @@ async function handleAdminPayrollCreate(env, body) {
     return json({ message: "c\u1EA7n user_name + period d\u1EA1ng YYYY-MM" }, 400);
   }
   const r = await env.DB.prepare(
-    `INSERT INTO payroll (user_name, period, hours, rate, bonus, penalty, total, note)
-     VALUES (?,?,?,?,?,?,?,?) RETURNING id`
+    `INSERT INTO payroll (user_name, period, hours, rate, bonus, penalty, total, note, shifts_json)
+     VALUES (?,?,?,?,?,?,?,?,?) RETURNING id`
   ).bind(
     name, period,
     Number(body.hours) || 0, Math.round(Number(body.rate) || 0),
     Math.round(Number(body.bonus) || 0), Math.round(Number(body.penalty) || 0),
-    Math.round(Number(body.total) || 0), body.note ?? null
+    Math.round(Number(body.total) || 0), body.note ?? null,
+    Array.isArray(body.shifts) ? JSON.stringify(body.shifts) : null
   ).first();
   return json({ ok: true, id: r?.id }, 201);
 }
@@ -3526,6 +3585,38 @@ var worker_default = {
         return json({ error: String(err) }, 500);
       }
     }
+    // ---- Nhân viên chấm công ----
+    if (url.pathname === "/api/admin/employees" && request.method === "GET") {
+      const auth = await requireAuth(env, request);
+      const denied = requireRole(auth, ["admin"]);
+      if (denied) return denied;
+      try {
+        return await handleAdminGetEmployees(env);
+      } catch (err) {
+        return json({ error: String(err) }, 500);
+      }
+    }
+    if (url.pathname === "/api/admin/employees" && request.method === "POST") {
+      const auth = await requireAuth(env, request);
+      const denied = requireRole(auth, ["admin"]);
+      if (denied) return denied;
+      try {
+        return await handleAdminAddEmployee(env, await request.json());
+      } catch (err) {
+        return json({ error: String(err) }, 500);
+      }
+    }
+    const empMutMatch = url.pathname.match(/^\/api\/admin\/employees\/(\d+)$/);
+    if (empMutMatch && (request.method === "PUT" || request.method === "DELETE")) {
+      const auth = await requireAuth(env, request);
+      const denied = requireRole(auth, ["admin"]);
+      if (denied) return denied;
+      try {
+        return await handleAdminEmployeeMutate(env, empMutMatch[1], request);
+      } catch (err) {
+        return json({ error: String(err) }, 500);
+      }
+    }
     // ---- Phiếu lương ----
     if (url.pathname === "/api/admin/payroll" && request.method === "GET") {
       const auth = await requireAuth(env, request);
@@ -3930,11 +4021,25 @@ async function ensureHubSchema(env) {
       user_name TEXT,
       period TEXT,
       hours REAL, rate INTEGER, bonus INTEGER DEFAULT 0, penalty INTEGER DEFAULT 0,
-      total INTEGER, note TEXT,
+      total INTEGER, note TEXT, shifts_json TEXT,
       synced_at TEXT NOT NULL DEFAULT (datetime('now')),
       UNIQUE(store_id, local_id)
     )`
   ).run();
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS hub_employees (
+      store_id TEXT NOT NULL,
+      local_id INTEGER NOT NULL,
+      name TEXT,
+      hourly_rate INTEGER DEFAULT 0,
+      active INTEGER DEFAULT 1,
+      synced_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(store_id, local_id)
+    )`
+  ).run();
+  try {
+    await env.DB.prepare("ALTER TABLE hub_payroll ADD COLUMN shifts_json TEXT").run();
+  } catch {}
 }
 
 async function requireHubStore(env, request) {
@@ -4073,18 +4178,37 @@ async function handleHubPush(env, storeId, body) {
   for (const p of payRows) {
     if (p?.local_id == null) continue;
     await env.DB.prepare(
-      `INSERT INTO hub_payroll (store_id, local_id, user_name, period, hours, rate, bonus, penalty, total, note, synced_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)
+      `INSERT INTO hub_payroll (store_id, local_id, user_name, period, hours, rate, bonus, penalty, total, note, shifts_json, synced_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(store_id, local_id) DO UPDATE SET
         user_name=excluded.user_name, period=excluded.period, hours=excluded.hours,
         rate=excluded.rate, bonus=excluded.bonus, penalty=excluded.penalty,
-        total=excluded.total, note=excluded.note, synced_at=excluded.synced_at`
+        total=excluded.total, note=excluded.note, shifts_json=excluded.shifts_json,
+        synced_at=excluded.synced_at`
     ).bind(
       storeId, p.local_id, p.user_name || null, p.period || null,
       Number(p.hours) || 0, Number(p.rate) || 0, Number(p.bonus) || 0,
-      Number(p.penalty) || 0, Number(p.total) || 0, p.note || null, now
+      Number(p.penalty) || 0, Number(p.total) || 0, p.note || null,
+      p.shifts_json || null, now
     ).run();
     payroll++;
+  }
+
+  const empRows = Array.isArray(body?.employees) ? body.employees : [];
+  let employees = 0;
+  for (const e of empRows) {
+    if (e?.local_id == null) continue;
+    await env.DB.prepare(
+      `INSERT INTO hub_employees (store_id, local_id, name, hourly_rate, active, synced_at)
+       VALUES (?,?,?,?,?,?)
+       ON CONFLICT(store_id, local_id) DO UPDATE SET
+        name=excluded.name, hourly_rate=excluded.hourly_rate,
+        active=excluded.active, synced_at=excluded.synced_at`
+    ).bind(
+      storeId, e.local_id, e.name || null,
+      Number(e.hourly_rate) || 0, e.active ? 1 : 0, now
+    ).run();
+    employees++;
   }
 
   // Xoá catalog bị xoá ở quán (replace semantics) — chỉ khi payload gửi full list

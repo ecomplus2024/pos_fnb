@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "att-admin-2";
+const APP_BUILD = "att-admin-3";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -8725,7 +8725,7 @@ function AttendanceAdminView() {
   };
 
   const loadUsers = async () => {
-    try { setUsersList(await call("/api/admin/users")); }
+    try { setUsersList(await call("/api/admin/employees")); }
     catch (e) { setMsg({ text: e.message, error: true }); }
   };
   useEffect(() => { if (admin) loadUsers(); }, [admin]);
@@ -8755,28 +8755,20 @@ function AttendanceAdminView() {
 
   const saveUser = async () => {
     const u = userModal;
+    if (!u.name.trim()) { setMsg({ text: "Nhập tên nhân viên", error: true }); return; }
     const body = {
-      full_name: u.full_name.trim(),
-      role: u.role,
+      name: u.name.trim(),
       hourly_rate: Number(u.hourly_rate) || 0,
+      active: u.active !== false,
     };
-    if (u.pin.trim()) body.pin = u.pin.trim();
-    if (u.password) body.password = u.password;
     try {
       if (u.id) {
-        await call(`/api/admin/users/${u.id}`, { method: "PUT", body: JSON.stringify(body) });
+        await call(`/api/admin/employees/${u.id}`, { method: "PUT", body: JSON.stringify(body) });
       } else {
-        if (!u.username.trim() || !u.password) {
-          setMsg({ text: "Cần username + mật khẩu", error: true });
-          return;
-        }
-        await call("/api/admin/users", {
-          method: "POST",
-          body: JSON.stringify({ ...body, username: u.username.trim() }),
-        });
+        await call("/api/admin/employees", { method: "POST", body: JSON.stringify(body) });
       }
       setUserModal(null);
-      setMsg({ text: "Đã lưu tài khoản", error: false });
+      setMsg({ text: "Đã lưu nhân viên", error: false });
       loadUsers();
     } catch (e) {
       setMsg({ text: e.message, error: true });
@@ -8784,9 +8776,9 @@ function AttendanceAdminView() {
   };
 
   const delUser = async (id) => {
-    if (!window.confirm("Xóa tài khoản này?")) return;
+    if (!window.confirm("Xóa/ẩn nhân viên này? (đã có ca chấm thì chỉ ẩn khỏi màn hình)")) return;
     try {
-      await call(`/api/admin/users/${id}`, { method: "DELETE" });
+      await call(`/api/admin/employees/${id}`, { method: "DELETE" });
       loadUsers();
     } catch (e) {
       setMsg({ text: e.message, error: true });
@@ -8813,15 +8805,26 @@ function AttendanceAdminView() {
     setPayForm((f) => ({ ...f, user_id: id, rate: u?.hourly_rate ? String(u.hourly_rate) : f.rate }));
   };
 
+  // Lấy danh sách ca của nhân viên trong kỳ — dùng cho tính giờ + in phiếu
+  const fetchEmpShifts = async (emp, period) => {
+    const list = await call(`/api/admin/attendance?from=${period}-01&to=${period}-31`);
+    return list
+      .filter((r) => r.user_id === emp.id || r.name === emp.name)
+      .map((r) => ({
+        date: String(r.check_in_at || "").slice(0, 10),
+        in: r.check_in_at, out: r.check_out_at,
+        hours: r.check_out_at ? (new Date(r.check_out_at) - new Date(r.check_in_at)) / 3600000 : 0,
+      }))
+      .sort((a, b) => String(a.in).localeCompare(String(b.in)));
+  };
+
   const calcPayHours = async () => {
     const u = usersList.find((x) => x.id === Number(payForm.user_id));
     if (!u || !payForm.period) return;
     try {
-      const list = await call(`/api/admin/attendance?from=${payForm.period}-01&to=${payForm.period}-31`);
-      const h = list
-        .filter((r) => r.user_id === u.id || r.name === (u.full_name || u.username))
-        .reduce((a, r) => a + (r.check_out_at ? (new Date(r.check_out_at) - new Date(r.check_in_at)) / 3600000 : 0), 0);
-      setPayForm((f) => ({ ...f, hours: h.toFixed(1) }));
+      const shifts = await fetchEmpShifts(u, payForm.period);
+      const h = shifts.reduce((a, s) => a + s.hours, 0);
+      setPayForm((f) => ({ ...f, hours: h.toFixed(1), _shifts: shifts }));
     } catch (e) {
       setMsg({ text: e.message, error: true });
     }
@@ -8832,11 +8835,32 @@ function AttendanceAdminView() {
     const hours = Number(payForm.hours) || 0, rate = Number(payForm.rate) || 0;
     const bonus = Number(payForm.bonus) || 0, penalty = Number(payForm.penalty) || 0;
     return {
-      user_name: u?.full_name || u?.username || "",
+      user_name: u?.name || "",
       period: payForm.period, hours, rate, bonus, penalty,
       total: Math.round(hours * rate + bonus - penalty),
       note: payForm.note.trim(),
+      shifts: payForm._shifts || [],
     };
+  };
+
+  const previewSlip = async () => {
+    const u = usersList.find((x) => x.id === Number(payForm.user_id));
+    if (!u || !payForm.period) { setMsg({ text: "Chọn nhân viên + kỳ", error: true }); return; }
+    // luôn lấy ca mới nhất khi xem phiếu để bảng chấm công đi kèm chính xác
+    try {
+      const shifts = await fetchEmpShifts(u, payForm.period);
+      const d = { ...slipData(), shifts };
+      if (!payForm.hours) setPayForm((f) => ({ ...f, hours: shifts.reduce((a, s) => a + s.hours, 0).toFixed(1), _shifts: shifts }));
+      setSlipView(d);
+    } catch (e) {
+      setMsg({ text: e.message, error: true });
+    }
+  };
+
+  const openSavedSlip = (p) => {
+    let shifts = [];
+    try { shifts = JSON.parse(p.shifts_json || "[]"); } catch {}
+    setSlipView({ ...p, shifts });
   };
 
   const saveSlip = async () => {
@@ -9056,9 +9080,12 @@ function AttendanceAdminView() {
         {tab === "staff" && (
           <div className="bg-white rounded-2xl border border-gray-200 p-5">
             <div className="flex items-center justify-between mb-4">
-              <p className="text-xs font-black text-gray-400 uppercase tracking-widest">Tài khoản nhân viên</p>
-              <button onClick={() => setUserModal({ full_name: "", username: "", password: "", role: "staff", pin: "", hourly_rate: "" })}
-                className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black uppercase tracking-wider hover:bg-emerald-700 transition">
+              <div>
+                <p className="text-xs font-black text-gray-400 uppercase tracking-widest">Nhân viên chấm công</p>
+                <p className="text-[11px] text-gray-400 mt-1">Chỉ cần tên — hệ thống tự tạo mã. Nhân viên hiện thẻ trên màn chấm công, không phải tài khoản đăng nhập.</p>
+              </div>
+              <button onClick={() => setUserModal({ name: "", hourly_rate: "", active: true })}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black uppercase tracking-wider hover:bg-emerald-700 transition whitespace-nowrap">
                 + Thêm nhân viên
               </button>
             </div>
@@ -9066,24 +9093,27 @@ function AttendanceAdminView() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b bg-gray-50 text-left">
-                    <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest">Tên</th>
-                    <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest">Username</th>
-                    <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest">Vai trò</th>
-                    <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest">PIN</th>
+                    <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest">Mã</th>
+                    <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest">Tên nhân viên</th>
                     <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest text-right">Lương/giờ</th>
+                    <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest">Trạng thái</th>
                     <th className="p-3"></th>
                   </tr>
                 </thead>
                 <tbody>
                   {usersList.map((u) => (
-                    <tr key={u.id} className="border-b border-gray-50">
-                      <td className="p-3 font-bold text-gray-800">{u.full_name || u.username}</td>
-                      <td className="p-3 text-gray-600">{u.username}</td>
-                      <td className="p-3 text-gray-600">{u.role}</td>
-                      <td className="p-3 text-gray-600">{u.has_pin ? "✓" : "—"}</td>
+                    <tr key={u.id} className={`border-b border-gray-50 ${u.active ? "" : "opacity-40"}`}>
+                      <td className="p-3 text-gray-400 font-mono text-xs">#{u.id}</td>
+                      <td className="p-3 font-bold text-gray-800">{u.name}</td>
                       <td className="p-3 text-right font-black">{u.hourly_rate ? `${Number(u.hourly_rate).toLocaleString("vi-VN")}đ` : "—"}</td>
+                      <td className="p-3">
+                        <button onClick={async () => { try { await call(`/api/admin/employees/${u.id}`, { method: "PUT", body: JSON.stringify({ active: u.active ? 0 : 1 }) }); loadUsers(); } catch (e) { setMsg({ text: e.message, error: true }); } }}
+                          className={`px-3 py-1 rounded-lg text-xs font-black ${u.active ? "bg-emerald-50 text-emerald-700" : "bg-gray-100 text-gray-400"}`}>
+                          {u.active ? "Đang dùng" : "Đã ẩn"}
+                        </button>
+                      </td>
                       <td className="p-3 text-right whitespace-nowrap">
-                        <button onClick={() => setUserModal({ id: u.id, full_name: u.full_name || "", username: u.username, password: "", role: u.role, pin: "", hourly_rate: u.hourly_rate || "" })}
+                        <button onClick={() => setUserModal({ id: u.id, name: u.name || "", hourly_rate: u.hourly_rate || "", active: !!u.active })}
                           className="px-3 py-1.5 rounded-lg text-xs font-black bg-gray-100 text-gray-600 hover:bg-gray-200 mr-1">Sửa</button>
                         <button onClick={() => delUser(u.id)}
                           className="px-3 py-1.5 rounded-lg text-xs font-black bg-red-50 text-red-500 hover:bg-red-100">Xóa</button>
@@ -9091,7 +9121,7 @@ function AttendanceAdminView() {
                     </tr>
                   ))}
                   {usersList.length === 0 && (
-                    <tr><td colSpan={6} className="p-8 text-center text-gray-400">Chưa có nhân viên</td></tr>
+                    <tr><td colSpan={5} className="p-8 text-center text-gray-400">Chưa có nhân viên — bấm "+ Thêm nhân viên" để tạo thẻ chấm công</td></tr>
                   )}
                 </tbody>
               </table>
@@ -9158,7 +9188,7 @@ function AttendanceAdminView() {
               <select value={payForm.user_id} onChange={(e) => pickPayUser(e.target.value)}
                 className="w-full px-3 py-2 border rounded-xl text-sm font-bold mb-2">
                 <option value="">— chọn —</option>
-                {usersList.map((u) => <option key={u.id} value={u.id}>{u.full_name || u.username}</option>)}
+                {usersList.filter((u) => u.active).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
               </select>
               <label className="text-xs text-gray-400 font-bold">Kỳ lương</label>
               <input type="month" value={payForm.period} onChange={(e) => setPayForm({ ...payForm, period: e.target.value })}
@@ -9192,7 +9222,7 @@ function AttendanceAdminView() {
                   className="flex-1 px-3 py-2 bg-gray-100 rounded-xl text-xs font-black text-gray-600 hover:bg-gray-200">
                   Tính giờ từ chấm công
                 </button>
-                <button onClick={() => { const d = slipData(); if (!d.user_name || !d.period) { setMsg({ text: "Chọn nhân viên + kỳ", error: true }); return; } setSlipView(d); }}
+                <button onClick={previewSlip}
                   className="flex-1 px-3 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black hover:bg-emerald-700">
                   Xem phiếu
                 </button>
@@ -9206,7 +9236,7 @@ function AttendanceAdminView() {
                     <span className="font-bold text-gray-800">{p.user_name}</span>
                     <span className="text-xs text-gray-400 ml-2">{p.period} — {Number(p.total || 0).toLocaleString("vi-VN")}đ</span>
                   </div>
-                  <button onClick={() => setSlipView(p)}
+                  <button onClick={() => openSavedSlip(p)}
                     className="px-3 py-1.5 rounded-lg text-xs font-black bg-gray-100 text-gray-600 hover:bg-gray-200">Xem/In</button>
                   <button onClick={() => delSlip(p.id)}
                     className="px-3 py-1.5 rounded-lg text-xs font-black bg-red-50 text-red-500 hover:bg-red-100">Xóa</button>
@@ -9226,7 +9256,7 @@ function AttendanceAdminView() {
             <label className="text-xs text-gray-400 font-bold">Nhân viên</label>
             <select value={addingShift.user_id} onChange={(e) => setAddingShift({ ...addingShift, user_id: e.target.value })}
               className="w-full px-3 py-2 border rounded-xl text-sm font-bold mb-2">
-              {usersList.map((u) => <option key={u.id} value={u.id}>{u.full_name || u.username}</option>)}
+              {usersList.filter((u) => u.active).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
             </select>
             <label className="text-xs text-gray-400 font-bold">Giờ vào</label>
             <input type="datetime-local" value={addingShift.ci} onChange={(e) => setAddingShift({ ...addingShift, ci: e.target.value })}
@@ -9244,30 +9274,17 @@ function AttendanceAdminView() {
         </div>
       )}
 
-      {/* ===== Modal sửa/thêm tài khoản ===== */}
+      {/* ===== Modal sửa/thêm nhân viên ===== */}
       {userModal && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl p-6 w-full max-w-sm">
-            <h3 className="font-black text-gray-800 mb-4">{userModal.id ? "Sửa tài khoản" : "Thêm tài khoản"}</h3>
-            <input type="text" value={userModal.full_name} onChange={(e) => setUserModal({ ...userModal, full_name: e.target.value })}
-              placeholder="Họ tên" className="w-full px-3 py-2 border rounded-xl text-sm mb-2" />
-            <input type="text" value={userModal.username} disabled={!!userModal.id}
-              onChange={(e) => setUserModal({ ...userModal, username: e.target.value })}
-              placeholder="Username đăng nhập" className="w-full px-3 py-2 border rounded-xl text-sm mb-2 disabled:bg-gray-50" />
-            <input type="password" value={userModal.password} onChange={(e) => setUserModal({ ...userModal, password: e.target.value })}
-              placeholder={userModal.id ? "Đổi mật khẩu (để trống = giữ)" : "Mật khẩu"}
-              className="w-full px-3 py-2 border rounded-xl text-sm mb-2" />
-            <select value={userModal.role} onChange={(e) => setUserModal({ ...userModal, role: e.target.value })}
-              className="w-full px-3 py-2 border rounded-xl text-sm font-bold mb-2">
-              <option value="staff">staff</option>
-              <option value="kitchen">kitchen</option>
-              <option value="admin">admin</option>
-            </select>
-            <input type="text" value={userModal.pin} onChange={(e) => setUserModal({ ...userModal, pin: e.target.value })}
-              placeholder={userModal.id ? "PIN mới (để trống = giữ)" : "PIN chấm công 4-6 số (tuỳ chọn)"}
-              className="w-full px-3 py-2 border rounded-xl text-sm mb-2" />
+            <h3 className="font-black text-gray-800 mb-4">{userModal.id ? `Sửa nhân viên #${userModal.id}` : "Thêm nhân viên"}</h3>
+            <label className="text-xs text-gray-400 font-bold">Tên nhân viên</label>
+            <input type="text" value={userModal.name} onChange={(e) => setUserModal({ ...userModal, name: e.target.value })}
+              placeholder="VD: Nguyễn Văn A" className="w-full px-3 py-2 border rounded-xl text-sm mb-2" />
+            <label className="text-xs text-gray-400 font-bold">Lương theo giờ (đ) — dùng khi tạo phiếu lương</label>
             <input type="number" value={userModal.hourly_rate} onChange={(e) => setUserModal({ ...userModal, hourly_rate: e.target.value })}
-              placeholder="Lương theo giờ (đ)" className="w-full px-3 py-2 border rounded-xl text-sm mb-4" />
+              placeholder="25000" className="w-full px-3 py-2 border rounded-xl text-sm mb-4" />
             <div className="flex gap-2">
               <button onClick={() => setUserModal(null)}
                 className="flex-1 px-3 py-2 bg-gray-100 rounded-xl text-sm font-black text-gray-600">Hủy</button>
@@ -9284,6 +9301,29 @@ function AttendanceAdminView() {
           <div className="w-full max-w-md">
             <div id="pay-slip" className="bg-white rounded-2xl p-6">
               <h3 className="text-center font-black text-lg text-gray-800">PHIẾU LƯƠNG — {slipView.period}</h3>
+              {/* Bảng chấm công chi tiết để nhân viên đối chiếu */}
+              {slipView.shifts?.length > 0 && (
+                <table className="w-full text-xs mt-4">
+                  <thead>
+                    <tr className="border-b border-gray-200 text-left">
+                      <th className="py-1.5 font-black text-gray-400 uppercase text-[10px]">Ngày</th>
+                      <th className="py-1.5 font-black text-gray-400 uppercase text-[10px]">Vào</th>
+                      <th className="py-1.5 font-black text-gray-400 uppercase text-[10px]">Ra</th>
+                      <th className="py-1.5 font-black text-gray-400 uppercase text-[10px] text-right">Giờ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {slipView.shifts.map((s, i) => (
+                      <tr key={i} className="border-b border-gray-50">
+                        <td className="py-1.5">{s.date ? `${s.date.slice(8, 10)}/${s.date.slice(5, 7)}` : "—"}</td>
+                        <td className="py-1.5">{s.in ? new Date(s.in).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" }) : "—"}</td>
+                        <td className="py-1.5">{s.out ? new Date(s.out).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" }) : "chưa tan"}</td>
+                        <td className="py-1.5 text-right font-bold">{s.hours.toFixed(1)}h</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
               <table className="w-full text-sm mt-4">
                 <tbody>
                   <tr className="border-b border-gray-100"><td className="py-2 text-gray-500">Nhân viên</td><td className="py-2 text-right font-bold">{slipView.user_name}</td></tr>
