@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">POS Server</string>
-    <string name="notif_title">POS Server đang chạy</string>
+    <string name="app_name">POS</string>
+    <string name="notif_title">POS đang chạy</string>
     <string name="notif_text">Server POS nội bộ — port 8787</string>
 </resources>
