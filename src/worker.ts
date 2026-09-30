@@ -2230,7 +2230,7 @@ async function handleAttendanceStaff(env) {
     name: r.full_name || r.username,
     role: r.role,
     checked_in: !!r.check_in_at,
-    check_in_at: r.check_in_at ? r.check_in_at + "Z" : null,
+    check_in_at: r.check_in_at ? r.check_in_at.replace(" ", "T") + "Z" : null,
   })));
 }
 
@@ -2298,8 +2298,8 @@ async function handleAdminAttendance(env, from, to) {
   ).bind(...params).all();
   return json(results.map((r) => ({
     ...r,
-    check_in_at: r.check_in_at ? r.check_in_at + "Z" : null,
-    check_out_at: r.check_out_at ? r.check_out_at + "Z" : null,
+    check_in_at: r.check_in_at ? r.check_in_at.replace(" ", "T") + "Z" : null,
+    check_out_at: r.check_out_at ? r.check_out_at.replace(" ", "T") + "Z" : null,
   })));
 }
 
@@ -2594,7 +2594,7 @@ async function handleOrderHistory(env, tableId = null) {
       order_type: o.order_type,
       total_amount: o.total,
       status: o.status,
-      created_at: o.created_at ? o.created_at + "Z" : null,
+      created_at: o.created_at ? o.created_at.replace(" ", "T") + "Z" : null,
       items: itemsOut
     });
   }
