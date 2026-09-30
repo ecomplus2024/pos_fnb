@@ -48,6 +48,8 @@ public class MainActivity extends Activity {
     private boolean serverUp = false;
     private long downSince = 0;
     private boolean extracting = false;
+    private long lastUpdateCheck = 0;
+    private int promptedVersion = -1; // APK mới đã mở dialog cài — không nhắc lại
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -75,6 +77,15 @@ public class MainActivity extends Activity {
 
         new Thread(this::ensureInstalledAndStart, "pos-setup").start();
         pollHealth();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Mỗi lần mở/quay lại app đều check update — throttle 5 phút tránh spam
+        if (System.currentTimeMillis() - lastUpdateCheck > 300000) {
+            checkSelfUpdate();
+        }
     }
 
     /** Lần đầu (hoặc sau khi update APK): giải nén assets/pos → filesDir/pos. */
@@ -128,6 +139,10 @@ public class MainActivity extends Activity {
             new Thread(() -> {
                 boolean ok = ping();
                 handler.post(() -> {
+                    // Check update định kỳ mỗi giờ — app POS chạy liên tục cả ngày
+                    if (System.currentTimeMillis() - lastUpdateCheck > 3600000) {
+                        checkSelfUpdate();
+                    }
                     if (ok) {
                         downSince = 0;
                         if (!serverUp) {
@@ -167,6 +182,7 @@ public class MainActivity extends Activity {
     // ---------- Self-update ----------
 
     private void checkSelfUpdate() {
+        lastUpdateCheck = System.currentTimeMillis();
         try {
             InputStream in = getAssets().open("update_url.txt");
             byte[] buf = new byte[in.available()];
@@ -188,7 +204,11 @@ public class MainActivity extends Activity {
             JSONObject j = new JSONObject(new String(buf));
             int remote = j.getInt("version_code");
             String apkUrl = j.getString("apk_url");
-            if (remote > BuildConfig.VERSION_CODE) downloadAndInstall(apkUrl);
+            // Chỉ tải + mở cài đặt 1 lần cho mỗi version mới (user bấm Back bỏ qua thì không hiện lại liên tục)
+            if (remote > BuildConfig.VERSION_CODE && remote != promptedVersion) {
+                promptedVersion = remote;
+                downloadAndInstall(apkUrl);
+            }
         } catch (Exception ignored) {}
     }
 
