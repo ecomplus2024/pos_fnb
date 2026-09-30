@@ -1,0 +1,9 @@
+name = "pos-hub-admin"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# Static admin SPA
+[assets]
+directory = "./public"
+binding = "ASSETS"

@@ -396,12 +396,39 @@ async function runRawChunked(ctx, stmts) {
   }
 }
 
+// Kéo nhân viên chấm công từ hub về máy local — admin tạo trên hub-admin,
+// máy POS tự có thẻ sau ~1 vòng sync. Tắt/xóa trên hub → ẩn thẻ ở local.
+async function pullHubUsers(db, ctx, storeId) {
+  let remote;
+  try {
+    remote = await d1QueryRows(ctx,
+      `SELECT id, name, pin, active FROM hub_users WHERE store_id = ${sqlLit(storeId)}`);
+  } catch { return; } // bảng chưa có trên hub → bỏ qua
+  const keepUsernames = [];
+  for (const u of remote || []) {
+    const username = `hub_${u.id}`;
+    if (u.active) keepUsernames.push(username);
+    await db.prepare(
+      `INSERT INTO users (username, password_hash, salt, full_name, role, pin, hidden)
+       VALUES (?, '', '', ?, 'staff', ?, ?)
+       ON CONFLICT(username) DO UPDATE SET
+         full_name = excluded.full_name, pin = excluded.pin, hidden = excluded.hidden`
+    ).bind(username, String(u.name || username), u.pin ? String(u.pin) : null, u.active ? 0 : 1).run();
+  }
+  // hub_* không còn active trên hub → ẩn khỏi màn chấm công local
+  const keep = keepUsernames.length ? keepUsernames.map((u) => `'${u}'`).join(",") : "''";
+  await db.prepare(
+    `UPDATE users SET hidden = 1 WHERE username LIKE 'hub_%' AND username NOT IN (${keep})`
+  ).run();
+}
+
 async function pushD1(db, hub, orders, catalog, attendance) {
   const storeId = String(hub.store_id || "").trim();
   if (!storeId) throw new Error("chưa nhập Mã quán (store_id)");
   const ctx = await resolveD1(db, hub);
   await ensureD1Schema(ctx);
   await claimStoreDevice(db, ctx, hub, storeId);
+  await pullHubUsers(db, ctx, storeId).catch(() => {});
   const stmts = [
     ...buildDataStatements(storeId, orders, attendance),
     ...buildCatalogStatements(storeId, catalog),

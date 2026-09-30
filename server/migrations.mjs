@@ -78,6 +78,11 @@ async function migrate(db) {
     db.exec("ALTER TABLE users ADD COLUMN pin TEXT");
     console.log("[db] +users.pin");
   }
+  // users.hidden — nhân viên pull từ hub bị tắt thì ẩn khỏi màn chấm công
+  if (!userCols.includes("hidden")) {
+    db.exec("ALTER TABLE users ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0");
+    console.log("[db] +users.hidden");
+  }
 
   // Chấm công: 1 row = 1 ca (check_in_at bắt đầu, check_out_at kết thúc)
   // synced_at: đánh dấu đã đẩy lên hub (giống orders)

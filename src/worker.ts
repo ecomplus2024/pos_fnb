@@ -2232,6 +2232,7 @@ async function handleAttendanceStaff(env) {
             a.check_in_at
      FROM users u
      LEFT JOIN attendance a ON a.user_id = u.id AND a.check_out_at IS NULL
+     WHERE COALESCE(u.hidden, 0) = 0
      ORDER BY u.id`
   ).all();
   return json(results.map((r) => ({
