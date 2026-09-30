@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "att-admin-1";
+const APP_BUILD = "att-admin-2";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -8618,6 +8618,15 @@ function AttendanceAdminView() {
   const [rows, setRows] = useState(null);
   const [msg, setMsg] = useState(null);
   const [editing, setEditing] = useState(null); // { id, ci, co, note }
+  const [tab, setTab] = useState("shifts"); // shifts | staff | month | payroll
+  const [usersList, setUsersList] = useState([]);
+  const [addingShift, setAddingShift] = useState(null); // { user_id, ci, co }
+  const [userModal, setUserModal] = useState(null); // null | { id?, full_name, username, password, role, pin, hourly_rate }
+  const [monthPeriod, setMonthPeriod] = useState(todayD.slice(0, 7));
+  const [monthRows, setMonthRows] = useState(null);
+  const [slips, setSlips] = useState([]);
+  const [payForm, setPayForm] = useState({ user_id: "", period: todayD.slice(0, 7), hours: "", rate: "", bonus: "0", penalty: "0", note: "" });
+  const [slipView, setSlipView] = useState(null); // phiếu đang preview
 
   useEffect(() => {
     if (!token) return;
@@ -8715,6 +8724,143 @@ function AttendanceAdminView() {
     }
   };
 
+  const loadUsers = async () => {
+    try { setUsersList(await call("/api/admin/users")); }
+    catch (e) { setMsg({ text: e.message, error: true }); }
+  };
+  useEffect(() => { if (admin) loadUsers(); }, [admin]);
+
+  const addShift = async () => {
+    if (!addingShift?.user_id || !addingShift?.ci) {
+      setMsg({ text: "Chọn nhân viên + giờ vào", error: true });
+      return;
+    }
+    try {
+      await call("/api/admin/attendance", {
+        method: "POST",
+        body: JSON.stringify({
+          user_id: Number(addingShift.user_id),
+          check_in_at: new Date(addingShift.ci).toISOString(),
+          check_out_at: addingShift.co ? new Date(addingShift.co).toISOString() : null,
+          note: "nhập tay",
+        }),
+      });
+      setAddingShift(null);
+      setMsg({ text: "Đã thêm ca", error: false });
+      load();
+    } catch (e) {
+      setMsg({ text: e.message, error: true });
+    }
+  };
+
+  const saveUser = async () => {
+    const u = userModal;
+    const body = {
+      full_name: u.full_name.trim(),
+      role: u.role,
+      hourly_rate: Number(u.hourly_rate) || 0,
+    };
+    if (u.pin.trim()) body.pin = u.pin.trim();
+    if (u.password) body.password = u.password;
+    try {
+      if (u.id) {
+        await call(`/api/admin/users/${u.id}`, { method: "PUT", body: JSON.stringify(body) });
+      } else {
+        if (!u.username.trim() || !u.password) {
+          setMsg({ text: "Cần username + mật khẩu", error: true });
+          return;
+        }
+        await call("/api/admin/users", {
+          method: "POST",
+          body: JSON.stringify({ ...body, username: u.username.trim() }),
+        });
+      }
+      setUserModal(null);
+      setMsg({ text: "Đã lưu tài khoản", error: false });
+      loadUsers();
+    } catch (e) {
+      setMsg({ text: e.message, error: true });
+    }
+  };
+
+  const delUser = async (id) => {
+    if (!window.confirm("Xóa tài khoản này?")) return;
+    try {
+      await call(`/api/admin/users/${id}`, { method: "DELETE" });
+      loadUsers();
+    } catch (e) {
+      setMsg({ text: e.message, error: true });
+    }
+  };
+
+  const loadMonth = async () => {
+    try {
+      setMonthRows(await call(`/api/admin/attendance?from=${monthPeriod}-01&to=${monthPeriod}-31`));
+    } catch (e) {
+      setMonthRows([]);
+      setMsg({ text: e.message, error: true });
+    }
+  };
+  useEffect(() => { if (admin && tab === "month") loadMonth(); }, [admin, tab, monthPeriod]);
+
+  const loadSlips = async () => {
+    try { setSlips(await call("/api/admin/payroll")); } catch { setSlips([]); }
+  };
+  useEffect(() => { if (admin && tab === "payroll") loadSlips(); }, [admin, tab]);
+
+  const pickPayUser = (id) => {
+    const u = usersList.find((x) => x.id === Number(id));
+    setPayForm((f) => ({ ...f, user_id: id, rate: u?.hourly_rate ? String(u.hourly_rate) : f.rate }));
+  };
+
+  const calcPayHours = async () => {
+    const u = usersList.find((x) => x.id === Number(payForm.user_id));
+    if (!u || !payForm.period) return;
+    try {
+      const list = await call(`/api/admin/attendance?from=${payForm.period}-01&to=${payForm.period}-31`);
+      const h = list
+        .filter((r) => r.user_id === u.id || r.name === (u.full_name || u.username))
+        .reduce((a, r) => a + (r.check_out_at ? (new Date(r.check_out_at) - new Date(r.check_in_at)) / 3600000 : 0), 0);
+      setPayForm((f) => ({ ...f, hours: h.toFixed(1) }));
+    } catch (e) {
+      setMsg({ text: e.message, error: true });
+    }
+  };
+
+  const slipData = () => {
+    const u = usersList.find((x) => x.id === Number(payForm.user_id));
+    const hours = Number(payForm.hours) || 0, rate = Number(payForm.rate) || 0;
+    const bonus = Number(payForm.bonus) || 0, penalty = Number(payForm.penalty) || 0;
+    return {
+      user_name: u?.full_name || u?.username || "",
+      period: payForm.period, hours, rate, bonus, penalty,
+      total: Math.round(hours * rate + bonus - penalty),
+      note: payForm.note.trim(),
+    };
+  };
+
+  const saveSlip = async () => {
+    const d = slipView || slipData();
+    if (!d.user_name || !d.period) { setMsg({ text: "Chọn nhân viên + kỳ", error: true }); return; }
+    try {
+      await call("/api/admin/payroll", { method: "POST", body: JSON.stringify(d) });
+      setMsg({ text: "Đã lưu phiếu lương", error: false });
+      loadSlips();
+    } catch (e) {
+      setMsg({ text: e.message, error: true });
+    }
+  };
+
+  const delSlip = async (id) => {
+    if (!window.confirm("Xóa phiếu này?")) return;
+    try {
+      await call(`/api/admin/payroll/${id}`, { method: "DELETE" });
+      loadSlips();
+    } catch (e) {
+      setMsg({ text: e.message, error: true });
+    }
+  };
+
   // ---- Màn đăng nhập riêng ----
   if (checking) {
     return <div className="min-h-screen flex items-center justify-center"><div className="text-gray-500">Đang tải...</div></div>;
@@ -8779,6 +8925,22 @@ function AttendanceAdminView() {
           </button>
         </div>
 
+        <div className="flex gap-2 flex-wrap">
+          {[["shifts", "Ca làm"], ["staff", "Nhân viên"], ["month", "Bảng công"], ["payroll", "Phiếu lương"]].map(([k, l]) => (
+            <button key={k} onClick={() => setTab(k)}
+              className={`px-4 py-2 rounded-xl text-sm font-black transition ${tab === k ? "bg-emerald-600 text-white shadow-lg" : "bg-white text-gray-600 border border-gray-200"}`}>
+              {l}
+            </button>
+          ))}
+        </div>
+
+        {msg && (
+          <div className={`p-3 rounded-xl text-sm font-bold ${msg.error ? "bg-red-50 text-red-700 border border-red-200" : "bg-green-50 text-green-700 border border-green-200"}`}>
+            {msg.text}
+          </div>
+        )}
+
+        {tab === "shifts" && (<>
         <div className="bg-white rounded-2xl border border-gray-200 p-4 flex flex-wrap items-center gap-3">
           <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
             className="px-3 py-2 border rounded-xl text-sm font-bold" />
@@ -8797,6 +8959,10 @@ function AttendanceAdminView() {
             className="px-4 py-2 bg-gray-100 rounded-xl text-xs font-black uppercase tracking-wider text-gray-600 hover:bg-gray-200 transition">
             Tháng này
           </button>
+          <button onClick={() => setAddingShift({ user_id: usersList[0]?.id || "", ci: "", co: "" })}
+            className="ml-auto px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black uppercase tracking-wider hover:bg-emerald-700 transition">
+            + Thêm ca
+          </button>
         </div>
 
         {Object.keys(totals).length > 0 && (
@@ -8809,12 +8975,6 @@ function AttendanceAdminView() {
                 </span>
               ))}
             </div>
-          </div>
-        )}
-
-        {msg && (
-          <div className={`p-3 rounded-xl text-sm font-bold ${msg.error ? "bg-red-50 text-red-700 border border-red-200" : "bg-green-50 text-green-700 border border-green-200"}`}>
-            {msg.text}
           </div>
         )}
 
@@ -8890,7 +9050,265 @@ function AttendanceAdminView() {
             </tbody>
           </table>
         </div>
+        </>)}
+
+        {/* ===== Tab Nhân viên ===== */}
+        {tab === "staff" && (
+          <div className="bg-white rounded-2xl border border-gray-200 p-5">
+            <div className="flex items-center justify-between mb-4">
+              <p className="text-xs font-black text-gray-400 uppercase tracking-widest">Tài khoản nhân viên</p>
+              <button onClick={() => setUserModal({ full_name: "", username: "", password: "", role: "staff", pin: "", hourly_rate: "" })}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black uppercase tracking-wider hover:bg-emerald-700 transition">
+                + Thêm nhân viên
+              </button>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-gray-50 text-left">
+                    <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest">Tên</th>
+                    <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest">Username</th>
+                    <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest">Vai trò</th>
+                    <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest">PIN</th>
+                    <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest text-right">Lương/giờ</th>
+                    <th className="p-3"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {usersList.map((u) => (
+                    <tr key={u.id} className="border-b border-gray-50">
+                      <td className="p-3 font-bold text-gray-800">{u.full_name || u.username}</td>
+                      <td className="p-3 text-gray-600">{u.username}</td>
+                      <td className="p-3 text-gray-600">{u.role}</td>
+                      <td className="p-3 text-gray-600">{u.has_pin ? "✓" : "—"}</td>
+                      <td className="p-3 text-right font-black">{u.hourly_rate ? `${Number(u.hourly_rate).toLocaleString("vi-VN")}đ` : "—"}</td>
+                      <td className="p-3 text-right whitespace-nowrap">
+                        <button onClick={() => setUserModal({ id: u.id, full_name: u.full_name || "", username: u.username, password: "", role: u.role, pin: "", hourly_rate: u.hourly_rate || "" })}
+                          className="px-3 py-1.5 rounded-lg text-xs font-black bg-gray-100 text-gray-600 hover:bg-gray-200 mr-1">Sửa</button>
+                        <button onClick={() => delUser(u.id)}
+                          className="px-3 py-1.5 rounded-lg text-xs font-black bg-red-50 text-red-500 hover:bg-red-100">Xóa</button>
+                      </td>
+                    </tr>
+                  ))}
+                  {usersList.length === 0 && (
+                    <tr><td colSpan={6} className="p-8 text-center text-gray-400">Chưa có nhân viên</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* ===== Tab Bảng công ===== */}
+        {tab === "month" && (
+          <div className="bg-white rounded-2xl border border-gray-200 p-5">
+            <div className="flex items-end gap-3 mb-4">
+              <div>
+                <p className="text-xs font-black text-gray-400 uppercase tracking-widest mb-1">Tháng</p>
+                <input type="month" value={monthPeriod} onChange={(e) => setMonthPeriod(e.target.value)}
+                  className="px-3 py-2 border rounded-xl text-sm font-bold" />
+              </div>
+            </div>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b bg-gray-50 text-left">
+                  <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest">Nhân viên</th>
+                  <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest">Số ngày</th>
+                  <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest">Số ca</th>
+                  <th className="p-3 font-black text-gray-400 uppercase text-[10px] tracking-widest text-right">Tổng giờ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(() => {
+                  const byUser = {};
+                  for (const r of monthRows || []) {
+                    const k = r.name || "?";
+                    if (!byUser[k]) byUser[k] = { days: new Set(), shifts: 0, hours: 0 };
+                    byUser[k].shifts++;
+                    if (r.check_in_at) byUser[k].days.add(String(r.check_in_at).slice(0, 10));
+                    if (r.check_out_at) byUser[k].hours += (new Date(r.check_out_at) - new Date(r.check_in_at)) / 3600000;
+                  }
+                  const entries = Object.entries(byUser);
+                  if (!entries.length && monthRows !== null) {
+                    return <tr><td colSpan={4} className="p-8 text-center text-gray-400">Không có ca nào trong tháng</td></tr>;
+                  }
+                  if (monthRows === null) {
+                    return <tr><td colSpan={4} className="p-8 text-center text-gray-400">Đang tải...</td></tr>;
+                  }
+                  return entries.map(([n, v]) => (
+                    <tr key={n} className="border-b border-gray-50">
+                      <td className="p-3 font-bold text-gray-800">{n}</td>
+                      <td className="p-3">{v.days.size}</td>
+                      <td className="p-3">{v.shifts}</td>
+                      <td className="p-3 text-right font-black text-emerald-700">{v.hours.toFixed(1)}h</td>
+                    </tr>
+                  ));
+                })()}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* ===== Tab Phiếu lương ===== */}
+        {tab === "payroll" && (
+          <div className="grid md:grid-cols-2 gap-4">
+            <div className="bg-white rounded-2xl border border-gray-200 p-5">
+              <p className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3">Tạo phiếu lương</p>
+              <label className="text-xs text-gray-400 font-bold">Nhân viên</label>
+              <select value={payForm.user_id} onChange={(e) => pickPayUser(e.target.value)}
+                className="w-full px-3 py-2 border rounded-xl text-sm font-bold mb-2">
+                <option value="">— chọn —</option>
+                {usersList.map((u) => <option key={u.id} value={u.id}>{u.full_name || u.username}</option>)}
+              </select>
+              <label className="text-xs text-gray-400 font-bold">Kỳ lương</label>
+              <input type="month" value={payForm.period} onChange={(e) => setPayForm({ ...payForm, period: e.target.value })}
+                className="w-full px-3 py-2 border rounded-xl text-sm font-bold mb-2" />
+              <div className="grid grid-cols-2 gap-2 mb-2">
+                <div>
+                  <label className="text-xs text-gray-400 font-bold">Tổng giờ</label>
+                  <input type="number" step="0.1" value={payForm.hours} onChange={(e) => setPayForm({ ...payForm, hours: e.target.value })}
+                    className="w-full px-3 py-2 border rounded-xl text-sm font-bold" />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-400 font-bold">Lương/giờ (đ)</label>
+                  <input type="number" value={payForm.rate} onChange={(e) => setPayForm({ ...payForm, rate: e.target.value })}
+                    className="w-full px-3 py-2 border rounded-xl text-sm font-bold" placeholder="25000" />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-400 font-bold">Thưởng (đ)</label>
+                  <input type="number" value={payForm.bonus} onChange={(e) => setPayForm({ ...payForm, bonus: e.target.value })}
+                    className="w-full px-3 py-2 border rounded-xl text-sm font-bold" />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-400 font-bold">Phạt (đ)</label>
+                  <input type="number" value={payForm.penalty} onChange={(e) => setPayForm({ ...payForm, penalty: e.target.value })}
+                    className="w-full px-3 py-2 border rounded-xl text-sm font-bold" />
+                </div>
+              </div>
+              <input type="text" value={payForm.note} onChange={(e) => setPayForm({ ...payForm, note: e.target.value })}
+                placeholder="Ghi chú (tuỳ chọn)" className="w-full px-3 py-2 border rounded-xl text-sm mb-3" />
+              <div className="flex gap-2">
+                <button onClick={calcPayHours}
+                  className="flex-1 px-3 py-2 bg-gray-100 rounded-xl text-xs font-black text-gray-600 hover:bg-gray-200">
+                  Tính giờ từ chấm công
+                </button>
+                <button onClick={() => { const d = slipData(); if (!d.user_name || !d.period) { setMsg({ text: "Chọn nhân viên + kỳ", error: true }); return; } setSlipView(d); }}
+                  className="flex-1 px-3 py-2 bg-emerald-600 text-white rounded-xl text-xs font-black hover:bg-emerald-700">
+                  Xem phiếu
+                </button>
+              </div>
+            </div>
+            <div className="bg-white rounded-2xl border border-gray-200 p-5">
+              <p className="text-xs font-black text-gray-400 uppercase tracking-widest mb-3">Phiếu đã lưu</p>
+              {slips.map((p) => (
+                <div key={p.id} className="flex items-center gap-2 py-2 border-b border-gray-50 last:border-0 text-sm">
+                  <div className="flex-1">
+                    <span className="font-bold text-gray-800">{p.user_name}</span>
+                    <span className="text-xs text-gray-400 ml-2">{p.period} — {Number(p.total || 0).toLocaleString("vi-VN")}đ</span>
+                  </div>
+                  <button onClick={() => setSlipView(p)}
+                    className="px-3 py-1.5 rounded-lg text-xs font-black bg-gray-100 text-gray-600 hover:bg-gray-200">Xem/In</button>
+                  <button onClick={() => delSlip(p.id)}
+                    className="px-3 py-1.5 rounded-lg text-xs font-black bg-red-50 text-red-500 hover:bg-red-100">Xóa</button>
+                </div>
+              ))}
+              {slips.length === 0 && <p className="text-sm text-gray-400">Chưa có phiếu nào.</p>}
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* ===== Modal thêm ca thủ công ===== */}
+      {addingShift && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-sm">
+            <h3 className="font-black text-gray-800 mb-4">Thêm ca (quên chấm)</h3>
+            <label className="text-xs text-gray-400 font-bold">Nhân viên</label>
+            <select value={addingShift.user_id} onChange={(e) => setAddingShift({ ...addingShift, user_id: e.target.value })}
+              className="w-full px-3 py-2 border rounded-xl text-sm font-bold mb-2">
+              {usersList.map((u) => <option key={u.id} value={u.id}>{u.full_name || u.username}</option>)}
+            </select>
+            <label className="text-xs text-gray-400 font-bold">Giờ vào</label>
+            <input type="datetime-local" value={addingShift.ci} onChange={(e) => setAddingShift({ ...addingShift, ci: e.target.value })}
+              className="w-full px-3 py-2 border rounded-xl text-sm mb-2" />
+            <label className="text-xs text-gray-400 font-bold">Giờ ra (để trống = đang làm)</label>
+            <input type="datetime-local" value={addingShift.co} onChange={(e) => setAddingShift({ ...addingShift, co: e.target.value })}
+              className="w-full px-3 py-2 border rounded-xl text-sm mb-4" />
+            <div className="flex gap-2">
+              <button onClick={() => setAddingShift(null)}
+                className="flex-1 px-3 py-2 bg-gray-100 rounded-xl text-sm font-black text-gray-600">Hủy</button>
+              <button onClick={addShift}
+                className="flex-1 px-3 py-2 bg-emerald-600 text-white rounded-xl text-sm font-black">Thêm</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== Modal sửa/thêm tài khoản ===== */}
+      {userModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-sm">
+            <h3 className="font-black text-gray-800 mb-4">{userModal.id ? "Sửa tài khoản" : "Thêm tài khoản"}</h3>
+            <input type="text" value={userModal.full_name} onChange={(e) => setUserModal({ ...userModal, full_name: e.target.value })}
+              placeholder="Họ tên" className="w-full px-3 py-2 border rounded-xl text-sm mb-2" />
+            <input type="text" value={userModal.username} disabled={!!userModal.id}
+              onChange={(e) => setUserModal({ ...userModal, username: e.target.value })}
+              placeholder="Username đăng nhập" className="w-full px-3 py-2 border rounded-xl text-sm mb-2 disabled:bg-gray-50" />
+            <input type="password" value={userModal.password} onChange={(e) => setUserModal({ ...userModal, password: e.target.value })}
+              placeholder={userModal.id ? "Đổi mật khẩu (để trống = giữ)" : "Mật khẩu"}
+              className="w-full px-3 py-2 border rounded-xl text-sm mb-2" />
+            <select value={userModal.role} onChange={(e) => setUserModal({ ...userModal, role: e.target.value })}
+              className="w-full px-3 py-2 border rounded-xl text-sm font-bold mb-2">
+              <option value="staff">staff</option>
+              <option value="kitchen">kitchen</option>
+              <option value="admin">admin</option>
+            </select>
+            <input type="text" value={userModal.pin} onChange={(e) => setUserModal({ ...userModal, pin: e.target.value })}
+              placeholder={userModal.id ? "PIN mới (để trống = giữ)" : "PIN chấm công 4-6 số (tuỳ chọn)"}
+              className="w-full px-3 py-2 border rounded-xl text-sm mb-2" />
+            <input type="number" value={userModal.hourly_rate} onChange={(e) => setUserModal({ ...userModal, hourly_rate: e.target.value })}
+              placeholder="Lương theo giờ (đ)" className="w-full px-3 py-2 border rounded-xl text-sm mb-4" />
+            <div className="flex gap-2">
+              <button onClick={() => setUserModal(null)}
+                className="flex-1 px-3 py-2 bg-gray-100 rounded-xl text-sm font-black text-gray-600">Hủy</button>
+              <button onClick={saveUser}
+                className="flex-1 px-3 py-2 bg-emerald-600 text-white rounded-xl text-sm font-black">Lưu</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== Phiếu lương preview / in ===== */}
+      {slipView && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50 overflow-auto">
+          <div className="w-full max-w-md">
+            <div id="pay-slip" className="bg-white rounded-2xl p-6">
+              <h3 className="text-center font-black text-lg text-gray-800">PHIẾU LƯƠNG — {slipView.period}</h3>
+              <table className="w-full text-sm mt-4">
+                <tbody>
+                  <tr className="border-b border-gray-100"><td className="py-2 text-gray-500">Nhân viên</td><td className="py-2 text-right font-bold">{slipView.user_name}</td></tr>
+                  <tr className="border-b border-gray-100"><td className="py-2 text-gray-500">Tổng giờ làm</td><td className="py-2 text-right">{slipView.hours}h</td></tr>
+                  <tr className="border-b border-gray-100"><td className="py-2 text-gray-500">Lương/giờ</td><td className="py-2 text-right">{Number(slipView.rate || 0).toLocaleString("vi-VN")}đ</td></tr>
+                  <tr className="border-b border-gray-100"><td className="py-2 text-gray-500">Lương chính</td><td className="py-2 text-right">{Math.round((slipView.hours || 0) * (slipView.rate || 0)).toLocaleString("vi-VN")}đ</td></tr>
+                  <tr className="border-b border-gray-100"><td className="py-2 text-gray-500">Thưởng</td><td className="py-2 text-right text-emerald-600">+{Number(slipView.bonus || 0).toLocaleString("vi-VN")}đ</td></tr>
+                  <tr className="border-b border-gray-100"><td className="py-2 text-gray-500">Phạt</td><td className="py-2 text-right text-red-500">-{Number(slipView.penalty || 0).toLocaleString("vi-VN")}đ</td></tr>
+                  <tr><td className="py-3 font-black">THỰC LĨNH</td><td className="py-3 text-right font-black text-lg">{Number(slipView.total || 0).toLocaleString("vi-VN")}đ</td></tr>
+                  {slipView.note && <tr><td colSpan={2} className="text-xs text-gray-400">Ghi chú: {slipView.note}</td></tr>}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex gap-2 mt-3 print:hidden">
+              <button onClick={() => setSlipView(null)}
+                className="flex-1 px-3 py-2 bg-white rounded-xl text-sm font-black text-gray-600">Đóng</button>
+              <button onClick={saveSlip}
+                className="flex-1 px-3 py-2 bg-emerald-600 text-white rounded-xl text-sm font-black">Lưu phiếu</button>
+              <button onClick={() => window.print()}
+                className="flex-1 px-3 py-2 bg-slate-800 text-white rounded-xl text-sm font-black">In / PDF</button>
+            </div>
+          </div>
+        </div>
+      )}
+      <style>{`@media print { body * { visibility: hidden } #pay-slip, #pay-slip * { visibility: visible } #pay-slip { position: absolute; left: 0; top: 0; width: 100% } }`}</style>
     </div>
   );
 }
