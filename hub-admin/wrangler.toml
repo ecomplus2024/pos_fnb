@@ -3,7 +3,7 @@ main = "src/index.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
-# Static admin SPA
+# Static admin SPA — cùng file phục vụ qua GitHub Pages ở /docs
 [assets]
-directory = "./public"
+directory = "../docs"
 binding = "ASSETS"
