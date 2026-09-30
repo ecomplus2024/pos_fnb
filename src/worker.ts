@@ -943,7 +943,7 @@ async function handlePublicItems(env, tableId) {
     size_name: it.size_name,
     notes: it.note,
     toppings: toppingsByItem.get(it.id) || [],
-    created_at: it.order_created_at ? it.order_created_at.replace(" ", "T") + "Z" : null
+    created_at: isoTs(it.order_created_at)
   })));
 }
 async function handleCreatePublicOrder(env, body) {
@@ -1343,7 +1343,7 @@ async function handleGetStaffCalls(env) {
     table_id: r.table_id,
     table_name: r.table_name,
     reason: r.reason,
-    created_at: r.created_at ? r.created_at.replace(" ", "T") + "Z" : null
+    created_at: isoTs(r.created_at)
   })));
 }
 async function handleResolveStaffCall(env, callId) {
@@ -1410,7 +1410,7 @@ async function handleCashierTakeawayList(env, statusParam) {
     total_amount: o.total,
     status: o.status,
     payment_method: o.payment_method,
-    created_at: o.created_at ? o.created_at.replace(" ", "T") + "Z" : null,
+    created_at: isoTs(o.created_at),
     items: itemsByOrder.get(o.id) || []
   })));
 }
@@ -1622,7 +1622,7 @@ async function handleTakeawayItems(env, clientId) {
     size_name: it.size_name,
     notes: it.note,
     toppings: toppingsByItem.get(it.id) || [],
-    created_at: it.order_created_at ? it.order_created_at.replace(" ", "T") + "Z" : null
+    created_at: isoTs(it.order_created_at)
   })));
 }
 async function handleDeleteTakeawayItem(env, orderId, itemId, requestClientId) {
@@ -1955,7 +1955,7 @@ async function handleShipItems(env, clientId) {
     size_name: it.size_name,
     notes: it.note,
     toppings: toppingsByItem.get(it.id) || [],
-    created_at: it.order_created_at ? it.order_created_at.replace(" ", "T") + "Z" : null
+    created_at: isoTs(it.order_created_at)
   })));
 }
 async function handleDeleteShipItem(env, orderId, itemId, requestClientId) {
@@ -2054,7 +2054,7 @@ async function buildShipOrderDetail(env, orderId) {
     ship_voice_url: o.ship_voice_url,
     total_amount: o.total,
     status: o.status,
-    created_at: o.created_at ? o.created_at.replace(" ", "T") + "Z" : null,
+    created_at: isoTs(o.created_at),
     items
   };
 }
@@ -2215,6 +2215,15 @@ async function handleAdminUpdateDeleteUser(env, userId, request) {
 
 // ================= Chấm công =================
 
+// Timestamp trong DB có 2 dạng: datetime('now') của SQLite "YYYY-MM-DD HH:MM:SS"
+// và new Date().toISOString() do worker ghi "YYYY-MM-DDTHH:MM:SS.mmmZ".
+// Chuẩn hoá về ISO-8601 đúng để mọi browser parse được.
+function isoTs(v) {
+  if (!v) return null;
+  const s = String(v);
+  return s.includes("T") ? s : s.replace(" ", "T") + "Z";
+}
+
 // Danh sách nhân viên + trạng thái ca — cho màn /chamcong trên máy POS chung.
 // Không trả pin/password — chỉ tên + trạng thái đang trong ca.
 async function handleAttendanceStaff(env) {
@@ -2230,7 +2239,7 @@ async function handleAttendanceStaff(env) {
     name: r.full_name || r.username,
     role: r.role,
     checked_in: !!r.check_in_at,
-    check_in_at: r.check_in_at ? r.check_in_at.replace(" ", "T") + "Z" : null,
+    check_in_at: isoTs(r.check_in_at),
   })));
 }
 
@@ -2298,8 +2307,8 @@ async function handleAdminAttendance(env, from, to) {
   ).bind(...params).all();
   return json(results.map((r) => ({
     ...r,
-    check_in_at: r.check_in_at ? r.check_in_at.replace(" ", "T") + "Z" : null,
-    check_out_at: r.check_out_at ? r.check_out_at.replace(" ", "T") + "Z" : null,
+    check_in_at: isoTs(r.check_in_at),
+    check_out_at: isoTs(r.check_out_at),
   })));
 }
 
@@ -2594,7 +2603,7 @@ async function handleOrderHistory(env, tableId = null) {
       order_type: o.order_type,
       total_amount: o.total,
       status: o.status,
-      created_at: o.created_at ? o.created_at.replace(" ", "T") + "Z" : null,
+      created_at: isoTs(o.created_at),
       items: itemsOut
     });
   }
