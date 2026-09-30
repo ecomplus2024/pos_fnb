@@ -259,19 +259,99 @@ public class MainActivity extends Activity {
         tv.setPadding(48, 24, 48, 24);
         sv.addView(tv);
         Button btn = new Button(this);
-        btn.setText("Khởi động lại");
+        btn.setText("Khởi động lại + kiểm tra bản mới");
         btn.setOnClickListener(v -> {
             downSince = 0;
             NodeService.start(this);
+            checkSelfUpdate(); // nếu GitHub đã có APK mới → tự tải & mở cài đặt
             showStatus("Đang khởi động lại…");
         });
+        Button btn2 = new Button(this);
+        btn2.setText("Tải code mới nhất (không mất dữ liệu)");
+        btn2.setOnClickListener(v -> hotUpdateAndRestart());
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         lp.gravity = Gravity.CENTER;
+        LinearLayout.LayoutParams lp2 = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp2.gravity = Gravity.CENTER;
+        lp2.topMargin = 16;
         box.addView(sv, new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
         box.addView(btn, lp);
+        box.addView(btn2, lp2);
         setContentView(box);
+        // Ngay khi hiện màn lỗi cũng check update — bản APK mới có thể đã fix lỗi
+        checkSelfUpdate();
+    }
+
+    /**
+     * Cứu hộ không cần APK: tải zip repo từ GitHub → ghi đè code (server/, src/,
+     * public/, schema.sql, package.json) trong filesDir/pos → restart Node.
+     * KHÔNG đụng thư mục data/ → pos.db giữ nguyên.
+     */
+    private void hotUpdateAndRestart() {
+        showStatus("Đang tải code mới nhất từ GitHub…");
+        new Thread(() -> {
+            try {
+                File zip = new File(getCacheDir(), "repo.zip");
+                HttpURLConnection c = (HttpURLConnection) new URL(
+                    "https://github.com/ecomplus2024/pos_fnb/archive/refs/heads/main.zip"
+                ).openConnection();
+                c.setConnectTimeout(15000);
+                c.setReadTimeout(300000);
+                try (InputStream in = c.getInputStream();
+                     FileOutputStream out = new FileOutputStream(zip)) {
+                    byte[] buf = new byte[65536];
+                    int n;
+                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                }
+                extractRepoZip(zip, new File(getFilesDir(), "pos"));
+                zip.delete();
+                handler.post(() -> {
+                    downSince = 0;
+                    NodeService.start(this);
+                    showStatus("Đã cập nhật code — đang khởi động lại…");
+                });
+            } catch (Exception e) {
+                handler.post(() -> showStatus("Lỗi tải code: " + e + " — đang thử khởi động lại…"));
+                NodeService.start(this);
+            }
+        }, "pos-hotupdate").start();
+    }
+
+    private void extractRepoZip(File zip, File posDir) throws IOException {
+        java.util.zip.ZipInputStream zin =
+            new java.util.zip.ZipInputStream(new java.io.FileInputStream(zip));
+        java.util.zip.ZipEntry e;
+        String root = null;
+        while ((e = zin.getNextEntry()) != null) {
+            String name = e.getName();
+            if (root == null) {
+                int slash = name.indexOf('/');
+                if (slash > 0) root = name.substring(0, slash + 1);
+                continue;
+            }
+            if (!name.startsWith(root)) continue;
+            String rel = name.substring(root.length());
+            if (rel.isEmpty() || rel.contains("..")) continue;
+            // Chỉ ghi đè code — tuyệt đối không đụng data/ (pos.db)
+            boolean code = rel.startsWith("server/") || rel.startsWith("src/")
+                || rel.startsWith("public/") || rel.equals("schema.sql")
+                || rel.equals("package.json");
+            if (!code) continue;
+            if (rel.startsWith("server/node_modules/") || rel.startsWith("server/data/")
+                || rel.startsWith("data/")) continue;
+            File out = new File(posDir, rel);
+            if (e.isDirectory()) { out.mkdirs(); continue; }
+            out.getParentFile().mkdirs();
+            try (FileOutputStream fos = new FileOutputStream(out)) {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = zin.read(buf)) > 0) fos.write(buf, 0, n);
+            }
+        }
+        zin.close();
     }
 
     private static String readTail(File f, int maxLines) {

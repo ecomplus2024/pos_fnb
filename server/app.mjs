@@ -34,7 +34,13 @@ const DATA_DIR = process.env.POS_DATA_DIR || path.join(ROOT, "data");
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const db = new D1Database(path.join(DATA_DIR, "pos.db"));
-await initDb(db, { schemaPath: path.join(ROOT, "schema.sql") });
+// Migration lỗi KHÔNG được làm sập server — vẫn boot để UI truy cập được
+// (nút "Cập nhật & khởi động lại" / self-update còn cứu được).
+try {
+  await initDb(db, { schemaPath: path.join(ROOT, "schema.sql") });
+} catch (e) {
+  console.error("[db] LỖI MIGRATION — server vẫn khởi động:", e);
+}
 
 // Load worker source nguyên vẹn (file .ts thực chất là JS thuần, @ts-nocheck)
 // qua data-URL import — không cần copy/rename file
