@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "d1-sync-1";
+const APP_BUILD = "d1-sync-2";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -6585,7 +6585,6 @@ function AdminPanel({ embedded = false, onExit }) {
   const [hubStatus, setHubStatus] = useState(null);
   const [hubMsg, setHubMsg] = useState(null);
   const [hubSaving, setHubSaving] = useState(false);
-  const [hubCf, setHubCf] = useState({ token: "", email: "", account_id: "" });
   const [tun, setTun] = useState({ token: "", email: "", account_id: "", zones: [], zone_id: "", zone_name: "", subdomain: "" });
   const [tunStatus, setTunStatus] = useState(null);
   const [tunMsg, setTunMsg] = useState(null);
@@ -6749,11 +6748,7 @@ function AdminPanel({ embedded = false, onExit }) {
     try {
       const body = { hub: { enabled: hub.enabled, mode: hub.mode, url: hub.url, store_id: hub.store_id, db_name: hub.db_name } };
       if (hub.api_key) body.hub.api_key = hub.api_key;
-      if (hubCf.token || hubCf.email || hubCf.account_id) {
-        body.cf = { token: hubCf.token, email: hubCf.email, account_id: hubCf.account_id };
-      }
       await apiAuth("/api/admin/settings", { method: "PUT", body: JSON.stringify(body) });
-      setHubCf({ token: "", email: "", account_id: "" });
       setHubMsg({ text: "Đã lưu cấu hình hub", error: false });
     } catch (e) {
       setHubMsg({ text: e.message || "Lưu thất bại", error: true });
@@ -6786,6 +6781,21 @@ function AdminPanel({ embedded = false, onExit }) {
   };
 
   // ---- Cloudflare Tunnel (public domain cho quán) ----
+  const saveTunToken = async () => {
+    setTunBusy(true); setTunMsg({ text: "Đang kiểm tra token...", error: false });
+    try {
+      const r = await apiAuth("/api/admin/tunnel-token", {
+        method: "POST",
+        body: JSON.stringify({ token: tun.token, email: tun.email, account_id: tun.account_id }),
+      });
+      if (!r.ok) throw new Error(r.error || "lỗi");
+      setTunMsg({ text: `Đã lưu token${r.account_id ? ` — account ${r.account_id.slice(0, 8)}…` : ""}. Dùng chung cho đồng bộ D1.`, error: false });
+      apiAuth("/api/admin/tunnel-status").then(setTunStatus).catch(() => {});
+    } catch (e) {
+      setTunMsg({ text: "Lỗi: " + (e.message || "không lưu được token"), error: true });
+    } finally { setTunBusy(false); }
+  };
+
   const loadTunZones = async () => {
     setTunBusy(true); setTunMsg({ text: "Đang lấy danh sách domain...", error: false });
     try {
@@ -7865,35 +7875,12 @@ function AdminPanel({ embedded = false, onExit }) {
                   )}
                 </div>
                 {hub.mode !== "worker" && (
-                  <div className="p-3 rounded-xl bg-blue-50 border border-blue-200 text-sm text-blue-800">
+                  <div className={`p-3 rounded-xl border text-sm ${hub.cf_token_masked ? "bg-blue-50 border-blue-200 text-blue-800" : "bg-amber-50 border-amber-200 text-amber-800"}`}>
                     {hub.cf_token_masked
-                      ? <span>Dùng chung <b>CF token của Tunnel</b> {hub.cf_token_masked}
-                          {hub.cf_account_id ? ` — account ${hub.cf_account_id.slice(0, 8)}…` : ""}.
+                      ? <span>Dùng chung <b>CF token của mục "Tên miền riêng"</b> {hub.cf_token_masked}.
                           Token cần thêm quyền <b>Account → D1 (Edit)</b>.</span>
-                      : <span><b>Chưa có CF token</b> — nhập token bên dưới (dùng chung với Tunnel).
-                          Token cần quyền <b>Account → D1 (Edit)</b> (+ Tunnel/DNS nếu dùng tunnel).</span>}
-                  </div>
-                )}
-                {hub.mode !== "worker" && !hub.cf_token_masked && (
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    <div className="space-y-1">
-                      <label className="text-xs font-black text-gray-500 uppercase tracking-widest">CF API token</label>
-                      <input type="password" value={hubCf.token} placeholder="cfat_..."
-                        onChange={(e) => setHubCf({ ...hubCf, token: e.target.value })}
-                        className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-xs font-black text-gray-500 uppercase tracking-widest">Email CF (nếu Global key)</label>
-                      <input type="text" value={hubCf.email} placeholder="để trống nếu API token"
-                        onChange={(e) => setHubCf({ ...hubCf, email: e.target.value })}
-                        className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-xs font-black text-gray-500 uppercase tracking-widest">Account ID (tùy chọn)</label>
-                      <input type="text" value={hubCf.account_id} placeholder="để trống = tự lấy"
-                        onChange={(e) => setHubCf({ ...hubCf, account_id: e.target.value })}
-                        className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
-                    </div>
+                      : <span><b>Chưa có CF token</b> — nhập token ở mục <b>"Tên miền riêng"</b> bên dưới
+                          rồi bấm "Lưu token". Token cần quyền <b>Account → D1 (Edit)</b>.</span>}
                   </div>
                 )}
                 <div className="flex flex-wrap gap-3">
@@ -7949,7 +7936,10 @@ function AdminPanel({ embedded = false, onExit }) {
                 )}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div className="space-y-1">
-                    <label className="text-xs font-black text-gray-500 uppercase tracking-widest">API token / Global key</label>
+                    <label className="text-xs font-black text-gray-500 uppercase tracking-widest">
+                      API token / Global key
+                      {tunStatus?.cf_token_masked && <span className="text-green-600 normal-case"> ✓ đã lưu {tunStatus.cf_token_masked}</span>}
+                    </label>
                     <input type="password" value={tun.token} placeholder="eyJh... hoặc key hex"
                       onChange={(e) => setTun({ ...tun, token: e.target.value })}
                       className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
@@ -7992,6 +7982,10 @@ function AdminPanel({ embedded = false, onExit }) {
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-3">
+                  <button onClick={saveTunToken} disabled={tunBusy || !tun.token}
+                    className="px-5 py-2.5 rounded-xl font-bold text-sm bg-green-100 text-green-700 hover:bg-green-200 transition disabled:opacity-50">
+                    {tunBusy ? "Đang lưu..." : "Lưu token"}
+                  </button>
                   <button onClick={loadTunZones} disabled={tunBusy || !tun.token}
                     className="px-5 py-2.5 rounded-xl font-bold text-sm bg-blue-100 text-blue-700 hover:bg-blue-200 transition disabled:opacity-50">
                     {tunBusy ? "Đang xử lý..." : "Tải domain"}

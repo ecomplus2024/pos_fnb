@@ -123,6 +123,30 @@ export async function tunnelApi(db, req, res, pathname, body, sendJson) {
       email: String(body?.email || "").trim(),
     };
 
+    // Lưu token không cần chạy setup tunnel — để dùng chung cho D1 sync
+    if (req.method === "POST" && pathname === "/api/admin/tunnel-token") {
+      if (!auth.token) throw new Error("Chưa nhập token");
+      // Verify token + tự resolve account_id nếu user không nhập
+      let account_id = String(body.account_id || "").trim();
+      try {
+        const accounts = await cfApi(auth, "GET", "/accounts?per_page=50");
+        if (account_id) {
+          if (!accounts?.some((a) => a.id === account_id))
+            throw new Error("Account ID không thuộc tài khoản này");
+        } else {
+          account_id = accounts?.[0]?.id || "";
+        }
+      } catch (e) {
+        if (!account_id) throw new Error(`token không hợp lệ hoặc không thấy account: ${e.message || e}`);
+      }
+      const cfg = (await getSetting(db, "tunnel")) || {};
+      await setSetting(db, "tunnel", {
+        ...cfg, cf_token: auth.token, cf_email: auth.email, account_id,
+      });
+      sendJson(res, { ok: true, account_id });
+      return true;
+    }
+
     // Danh sách domain (zones) trong tài khoản CF
     if (req.method === "POST" && pathname === "/api/admin/tunnel-domains") {
       const zones = await cfApi(auth, "GET", "/zones?per_page=50&status=active");
