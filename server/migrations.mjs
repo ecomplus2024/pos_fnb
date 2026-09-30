@@ -132,10 +132,33 @@ async function migrate(db) {
     check_out_at TEXT,
     note TEXT,
     synced_at TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (user_id) REFERENCES users(id)
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_attendance_user ON attendance(user_id, check_in_at)`);
+
+  // DB cũ: attendance.user_id có FK → users(id). Giờ trỏ employees → nhân viên
+  // mới không có trong users → check-in văng "FOREIGN KEY constraint failed".
+  // SQLite không drop FK được → rebuild bảng.
+  const attFks = await db.prepare("PRAGMA foreign_key_list(attendance)").all();
+  if ((attFks.results || []).length) {
+    db.exec("PRAGMA foreign_keys = OFF");
+    db.exec(`CREATE TABLE attendance_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      check_in_at TEXT NOT NULL,
+      check_out_at TEXT,
+      note TEXT,
+      synced_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )`);
+    db.exec(`INSERT INTO attendance_new (id, user_id, check_in_at, check_out_at, note, synced_at, created_at)
+      SELECT id, user_id, check_in_at, check_out_at, note, synced_at, created_at FROM attendance`);
+    db.exec("DROP TABLE attendance");
+    db.exec("ALTER TABLE attendance_new RENAME TO attendance");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_attendance_user ON attendance(user_id, check_in_at)");
+    db.exec("PRAGMA foreign_keys = ON");
+    console.log("[db] attendance: rebuild bỏ FK users (chấm công theo employees)");
+  }
 
   // Trigger giữ updated_at cho sync — chỉ chạy khi synced_at KHÔNG đổi
   // (mark synced_at không kích trigger → tránh vòng lặp re-push)
