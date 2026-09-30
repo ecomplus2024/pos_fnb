@@ -99,7 +99,7 @@ async function migrate(db) {
     synced_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`);
-  const payCols = db.prepare("PRAGMA table_info(payroll)").all().map((c) => c.name);
+  const payCols = await columnNames(db, "payroll");
   if (!payCols.includes("shifts_json")) {
     db.exec("ALTER TABLE payroll ADD COLUMN shifts_json TEXT");
     console.log("[db] +payroll.shifts_json");
