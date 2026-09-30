@@ -23,7 +23,7 @@ import { D1Database } from "./d1.mjs";
 import { createAssets } from "./assets.mjs";
 import { installCacheShim } from "./cache-shim.mjs";
 import { initDb } from "./migrations.mjs";
-import { startSyncLoop, syncNow, hubPing, getSyncStatus } from "./sync.mjs";
+import { startSyncLoop, syncNow, hubPing, getSyncStatus, d1Api } from "./sync.mjs";
 import { tunnelApi, autoStartTunnel } from "./tunnel.mjs";
 
 installCacheShim();
@@ -305,13 +305,14 @@ http
       if (await handleAdminServer(req, res, pathname)) return;
     }
 
-    if (pathname.startsWith("/api/admin/tunnel-")) {
+    if (pathname.startsWith("/api/admin/tunnel-") || pathname.startsWith("/api/admin/d1-")) {
       if (!(await requireAdmin(req))) {
         sendJson(res, { message: "Chỉ admin" }, 401);
         return;
       }
       const body = await readJsonBody(req);
       if (await tunnelApi(db, req, res, pathname, body, sendJson)) return;
+      if (await d1Api(db, req, res, pathname, body, sendJson)) return;
     }
 
 

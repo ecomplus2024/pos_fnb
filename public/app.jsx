@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "d1-sync-2";
+const APP_BUILD = "d1-sync-3";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -6585,6 +6585,9 @@ function AdminPanel({ embedded = false, onExit }) {
   const [hubStatus, setHubStatus] = useState(null);
   const [hubMsg, setHubMsg] = useState(null);
   const [hubSaving, setHubSaving] = useState(false);
+  const [hubDbs, setHubDbs] = useState([]); // danh sách D1 database trên CF
+  const [newDbName, setNewDbName] = useState("");
+  const [dbBusy, setDbBusy] = useState(false);
   const [tun, setTun] = useState({ token: "", email: "", account_id: "", zones: [], zone_id: "", zone_name: "", subdomain: "" });
   const [tunStatus, setTunStatus] = useState(null);
   const [tunMsg, setTunMsg] = useState(null);
@@ -6665,6 +6668,11 @@ function AdminPanel({ embedded = false, onExit }) {
         }
         apiAuth("/api/admin/sync-status").then(setHubStatus).catch(() => setHubStatus(null));
         apiAuth("/api/admin/tunnel-status").then(setTunStatus).catch(() => setTunStatus(null));
+        if (adminSettings?.hub?.cf_token_masked) {
+          apiAuth("/api/admin/d1-list", { method: "POST" })
+            .then((r) => { if (r?.databases) setHubDbs(r.databases); })
+            .catch(() => {});
+        }
       }
     } catch (err) {
       showToast("Lỗi tải dữ liệu: " + err.message);
@@ -6777,6 +6785,39 @@ function AdminPanel({ embedded = false, onExit }) {
                      : { text: "Đồng bộ lỗi: " + (r.detail || ""), error: true });
     } catch (e) {
       setHubMsg({ text: e.message || "Đồng bộ thất bại", error: true });
+    }
+  };
+
+  const loadDbs = async () => {
+    setDbBusy(true); setHubMsg(null);
+    try {
+      const r = await apiAuth("/api/admin/d1-list", { method: "POST" });
+      if (!r.ok) throw new Error(r.error || "không tải được danh sách");
+      const dbs = r.databases || [];
+      setHubDbs(dbs);
+      // Nếu tên đang nhập không có trong DS → tự chọn DB đầu tiên
+      setHub((h) => (dbs.length && !dbs.some((d) => d.name === h.db_name)
+        ? { ...h, db_name: dbs[0].name } : h));
+      setHubMsg({ text: `Tìm thấy ${dbs.length} database`, error: false });
+    } catch (e) {
+      setHubMsg({ text: e.message, error: true });
+    } finally { setDbBusy(false); }
+  };
+
+  const createDb = async () => {
+    const name = newDbName.trim();
+    if (!name) return;
+    setDbBusy(true); setHubMsg(null);
+    try {
+      const r = await apiAuth("/api/admin/d1-create", { method: "POST", body: JSON.stringify({ name }) });
+      if (!r.ok) throw new Error(r.error || "không tạo được");
+      setHubMsg({ text: `Đã tạo database "${r.database.name}"`, error: false });
+      setNewDbName("");
+      await loadDbs();
+      setHub((h) => ({ ...h, db_name: r.database.name }));
+    } catch (e) {
+      setHubMsg({ text: e.message, error: true });
+      setDbBusy(false);
     }
   };
 
@@ -7866,11 +7907,39 @@ function AdminPanel({ embedded = false, onExit }) {
                       </div>
                     </>
                   ) : (
-                    <div className="space-y-1">
-                      <label className="text-xs font-black text-gray-500 uppercase tracking-widest">Tên database D1</label>
-                      <input type="text" value={hub.db_name} placeholder="pos-free"
-                        onChange={(e) => setHub({ ...hub, db_name: e.target.value })}
-                        className="w-full px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
+                    <div className="space-y-1 md:col-span-2">
+                      <label className="text-xs font-black text-gray-500 uppercase tracking-widest">Database D1</label>
+                      <div className="flex gap-2">
+                        {hubDbs.length ? (
+                          <select value={hub.db_name}
+                            onChange={(e) => setHub({ ...hub, db_name: e.target.value })}
+                            className="flex-1 px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm">
+                            {hub.db_name && !hubDbs.some((d) => d.name === hub.db_name) && (
+                              <option value={hub.db_name}>{hub.db_name} (nhập tay)</option>
+                            )}
+                            {hubDbs.map((d) => (
+                              <option key={d.uuid} value={d.name}>{d.name}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input type="text" value={hub.db_name} placeholder="pos-free"
+                            onChange={(e) => setHub({ ...hub, db_name: e.target.value })}
+                            className="flex-1 px-4 py-2.5 rounded-xl border border-gray-200 font-mono text-sm" />
+                        )}
+                        <button type="button" onClick={loadDbs} disabled={dbBusy}
+                          className="px-3 py-2.5 rounded-xl text-sm font-bold bg-blue-100 text-blue-700 hover:bg-blue-200 transition disabled:opacity-50 whitespace-nowrap">
+                          {dbBusy ? "..." : "Tải DS"}
+                        </button>
+                      </div>
+                      <div className="flex gap-2 items-center">
+                        <input type="text" value={newDbName} placeholder="tên DB mới, VD: pos-hub"
+                          onChange={(e) => setNewDbName(e.target.value)}
+                          className="flex-1 px-3 py-2 rounded-xl border border-gray-200 font-mono text-xs" />
+                        <button type="button" onClick={createDb} disabled={dbBusy || !newDbName.trim()}
+                          className="px-3 py-2 rounded-xl text-xs font-bold bg-green-100 text-green-700 hover:bg-green-200 transition disabled:opacity-50 whitespace-nowrap">
+                          + Tạo DB mới
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>

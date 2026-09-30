@@ -116,19 +116,63 @@ function sqlLit(v) {
 
 // ---------- mode "d1": nói thẳng với Cloudflare REST API ----------
 
-// Resolve thông tin kết nối: token (từ tunnel), account_id, db_id.
-async function resolveD1(db, hub) {
+// Lấy auth CF: token lưu chung trong settings.tunnel + account_id.
+async function getCfAuth(db) {
   const tun = (await getSetting(db, "tunnel")) || {};
-  const auth = { token: tun.cf_token || hub.cf_token || "", email: tun.cf_email || hub.cf_email || "" };
+  const auth = { token: tun.cf_token || "", email: tun.cf_email || "" };
   if (!auth.token) {
-    throw new Error("chưa có CF API token — nhập token ở phần Tunnel hoặc Hub (token cần quyền D1 Edit)");
+    throw new Error('chưa có CF API token — nhập token ở mục "Tên miền riêng" rồi bấm "Lưu token"');
   }
-  let account_id = tun.account_id || hub.account_id || "";
+  let account_id = tun.account_id || "";
   if (!account_id) {
     const accounts = await cfApi(auth, "GET", "/accounts?per_page=50");
     account_id = accounts?.[0]?.id || "";
-    if (!account_id) throw new Error("token không thấy account nào — nhập Account ID");
+    if (!account_id) throw new Error("token không thấy account nào — nhập Account ID ở mục Tên miền riêng");
   }
+  return { auth, account_id };
+}
+
+// API cho UI: liệt kê / tạo D1 database bằng token đã lưu.
+// Trả true nếu đã xử lý request.
+export async function d1Api(db, req, res, pathname, body, sendJson) {
+  if (!pathname.startsWith("/api/admin/d1-")) return false;
+  try {
+    const { auth, account_id } = await getCfAuth(db);
+
+    if (req.method === "POST" && pathname === "/api/admin/d1-list") {
+      const dbs = await cfApi(auth, "GET",
+        `/accounts/${account_id}/d1/database?per_page=100`).catch((e) => {
+          throw new Error(`lỗi liệt kê D1 (token cần quyền "Account → D1: Edit"): ${e.message || e}`);
+        });
+      sendJson(res, {
+        ok: true,
+        databases: (dbs || []).map((d) => ({ name: d.name, uuid: d.uuid || d.id })),
+      });
+      return true;
+    }
+
+    if (req.method === "POST" && pathname === "/api/admin/d1-create") {
+      const name = String(body?.name || "").trim().toLowerCase();
+      if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(name)) {
+        throw new Error("tên DB chỉ gồm chữ thường, số, gạch ngang, gạch dưới");
+      }
+      const created = await cfApi(auth, "POST",
+        `/accounts/${account_id}/d1/database`, { name }).catch((e) => {
+          throw new Error(`không tạo được DB (token cần quyền "Account → D1: Edit"): ${e.message || e}`);
+        });
+      sendJson(res, { ok: true, database: { name: created.name || name, uuid: created.uuid || created.id } });
+      return true;
+    }
+  } catch (err) {
+    sendJson(res, { ok: false, error: String(err?.message || err) }, 200);
+    return true;
+  }
+  return false;
+}
+
+// Resolve thông tin kết nối: token (từ tunnel), account_id, db_id.
+async function resolveD1(db, hub) {
+  const { auth, account_id } = await getCfAuth(db);
   const db_name = String(hub.db_name || "pos-free").trim();
   let db_id = hub.db_id || "";
   if (!db_id || hub._db_name_cached !== db_name) {
