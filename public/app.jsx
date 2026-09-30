@@ -1799,6 +1799,8 @@ function PosApp({ user, onLogout }) {
           <button onClick={() => setView("counter")} title="Pha chế"
             className={`w-12 h-12 rounded-xl flex items-center justify-center transition ${view === "counter" ? "bg-blue-600 text-white shadow-md" : "bg-gray-100 text-gray-500 hover:bg-gray-200"}`}><Icon name="cup-soda" className="w-5 h-5" /></button>
         </div>
+        <button onClick={() => setView("attendance")} title="Chấm công"
+          className={`w-12 h-12 rounded-xl flex items-center justify-center transition mb-3 ${view === "attendance" ? "bg-emerald-600 text-white shadow-md" : "bg-gray-100 text-gray-500 hover:bg-gray-200"}`}><Icon name="clock" className="w-5 h-5" /></button>
         <button
           onClick={() => {
             if (user?.role !== "admin") { showToast("Chỉ admin mới vào được Cài đặt"); return; }
@@ -1822,6 +1824,10 @@ function PosApp({ user, onLogout }) {
           className={`flex flex-col items-center gap-0.5 flex-1 py-2 rounded-xl transition ${view === "counter" ? "bg-blue-100 text-blue-700" : "text-gray-400"}`}>
           <Icon name="cup-soda" className="w-5 h-5" /><span className="text-[10px] font-semibold">Pha chế</span>
         </button>
+        <button onClick={() => setView("attendance")}
+          className={`flex flex-col items-center gap-0.5 flex-1 py-2 rounded-xl transition ${view === "attendance" ? "bg-emerald-100 text-emerald-700" : "text-gray-400"}`}>
+          <Icon name="clock" className="w-5 h-5" /><span className="text-[10px] font-semibold">Công</span>
+        </button>
         <button onClick={() => {
           if (user?.role !== "admin") { showToast("Chỉ admin mới vào được Cài đặt"); return; }
           setSelectedTable(null); setCart([]); setView("admin");
@@ -1835,7 +1841,10 @@ function PosApp({ user, onLogout }) {
         {(view === "kitchen" || view === "counter") && (
           <KitchenView unit={view} fill="fill" onLogout={onLogout} />
         )}
-        {view !== "kitchen" && view !== "counter" && (
+        {view === "attendance" && (
+          <div className="flex-1 overflow-y-auto"><AttendanceView /></div>
+        )}
+        {view !== "kitchen" && view !== "counter" && view !== "attendance" && (
         <div className="flex-1 overflow-y-auto p-4 pb-20 md:p-6 md:pb-6">
           {view === "tables" && (
             <>
@@ -8420,14 +8429,14 @@ function AdminPanel({ embedded = false, onExit }) {
 }
 
 // ============ Chấm công (/chamcong) ============
-// Màn hình trên máy POS chung: nhân viên chọn tên → nhập PIN → Vào ca / Tan ca.
+// Màn hình trên máy POS chung: nhân viên BẤM THẺ TÊN để vào ca / tan ca.
+// Thẻ xám = ngoài ca, thẻ xanh sáng = đang trong ca. Không cần PIN.
 function AttendanceView() {
   const [staff, setStaff] = useState([]);
-  const [sel, setSel] = useState(null); // nhân viên đang chọn
-  const [pin, setPin] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busyId, setBusyId] = useState(null); // thẻ đang xử lý
   const [result, setResult] = useState(null); // { ok, text }
   const [now, setNow] = useState(Date.now());
+  const resultTimer = useRef(null);
 
   const load = async () => {
     try {
@@ -8454,37 +8463,38 @@ function AttendanceView() {
   };
   const fmtTime = (iso) => new Date(iso).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
 
-  const doCheck = async (action) => {
-    if (!sel || busy) return;
-    setBusy(true);
-    setResult(null);
+  const flash = (ok, text) => {
+    setResult({ ok, text });
+    clearTimeout(resultTimer.current);
+    resultTimer.current = setTimeout(() => setResult(null), 4000);
+  };
+
+  // Bấm thẻ: đang ngoài ca → vào ca; đang trong ca → tan ca
+  const toggle = async (s) => {
+    if (busyId) return;
+    setBusyId(s.id);
+    const action = s.checked_in ? "out" : "in";
+    // Optimistic: đổi màu ngay, reconcile sau khi server trả lời
+    setStaff((prev) => prev.map((p) => p.id === s.id ? { ...p, checked_in: !s.checked_in, check_in_at: !s.checked_in ? new Date().toISOString() : null } : p));
     try {
       const r = await fetch("/api/attendance/check", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: sel.id, pin, action }),
+        body: JSON.stringify({ user_id: s.id, action }),
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
-        setResult({ ok: false, text: data.message || data.error || `Lỗi ${r.status}` });
+        flash(false, data.message || data.error || `Lỗi ${r.status}`);
       } else {
-        setResult(data.status === "in"
-          ? { ok: true, text: `${data.name} vào ca lúc ${fmtTime(data.check_in_at)}` }
-          : { ok: true, text: `${data.name} tan ca — ${data.hours}h` });
-        setSel(null);
-        setPin("");
-        load();
+        flash(true, data.status === "in"
+          ? `${data.name} vào ca lúc ${fmtTime(data.check_in_at)}`
+          : `${data.name} tan ca — ${data.hours}h`);
       }
     } catch {
-      setResult({ ok: false, text: "Không kết nối được server" });
+      flash(false, "Không kết nối được server");
     }
-    setBusy(false);
-  };
-
-  const pressKey = (k) => {
-    if (k === "del") setPin((p) => p.slice(0, -1));
-    else if (k === "clear") setPin("");
-    else if (pin.length < 6) setPin((p) => p + k);
+    setBusyId(null);
+    load();
   };
 
   return (
@@ -8493,7 +8503,10 @@ function AttendanceView() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl md:text-3xl font-black text-gray-800">Chấm công</h1>
-            <p className="text-sm text-gray-500 font-medium">{new Date().toLocaleDateString("vi-VN", { weekday: "long", day: "2-digit", month: "2-digit", year: "numeric" })}</p>
+            <p className="text-sm text-gray-500 font-medium">
+              {new Date().toLocaleDateString("vi-VN", { weekday: "long", day: "2-digit", month: "2-digit", year: "numeric" })}
+              {" · "}Bấm vào tên để vào ca / tan ca
+            </p>
           </div>
           <button onClick={load} className="px-4 py-2 bg-white rounded-xl font-bold text-sm text-gray-600 shadow-sm border border-gray-200 active:scale-95 transition">
             Tải lại
@@ -8501,30 +8514,35 @@ function AttendanceView() {
         </div>
 
         {result && (
-          <div className={`mb-4 p-4 rounded-2xl font-bold text-center ${result.ok ? "bg-green-50 text-green-700 border border-green-200" : "bg-red-50 text-red-700 border border-red-200"}`}>
+          <div className={`mb-4 p-4 rounded-2xl font-bold text-center transition ${result.ok ? "bg-green-50 text-green-700 border border-green-200" : "bg-red-50 text-red-700 border border-red-200"}`}>
             {result.text}
           </div>
         )}
 
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
           {staff.map((s) => (
-            <button key={s.id} onClick={() => { setSel(s); setPin(""); setResult(null); }}
-              className={`p-4 rounded-2xl border-2 text-left transition-all active:scale-95 ${
+            <button key={s.id} onClick={() => toggle(s)} disabled={busyId === s.id}
+              className={`p-5 rounded-2xl border-2 text-left transition-all active:scale-95 disabled:opacity-60 ${
                 s.checked_in
-                  ? "bg-green-50 border-green-300 shadow-green-100 shadow-md"
-                  : "bg-white border-gray-200 hover:border-primary-300"
+                  ? "bg-green-500 border-green-400 shadow-lg shadow-green-200 text-white"
+                  : "bg-white border-gray-200 hover:border-gray-300 text-gray-800"
               }`}>
-              <div className="font-black text-gray-800 truncate">{s.name}</div>
-              <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mt-0.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className={`font-black truncate ${s.checked_in ? "text-white" : "text-gray-800"}`}>{s.name}</div>
+                {busyId === s.id && (
+                  <span className={`w-4 h-4 border-2 rounded-full animate-spin flex-shrink-0 ${s.checked_in ? "border-white/40 border-t-white" : "border-gray-300 border-t-gray-600"}`} />
+                )}
+              </div>
+              <div className={`text-[10px] font-bold uppercase tracking-wider mt-0.5 ${s.checked_in ? "text-green-100" : "text-gray-400"}`}>
                 {s.role === "admin" ? "Quản lý" : s.role === "kitchen" ? "Bếp" : "Order"}
               </div>
               {s.checked_in ? (
-                <div className="mt-2 flex items-center gap-1 text-green-700 font-black text-xs">
-                  <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-                  Trong ca {s.check_in_at ? fmtElapsed(s.check_in_at) : ""}
+                <div className="mt-3 flex items-center gap-1.5 text-white font-black text-sm">
+                  <span className="w-2 h-2 rounded-full bg-white animate-pulse"></span>
+                  Đang làm {s.check_in_at ? fmtElapsed(s.check_in_at) : ""}
                 </div>
               ) : (
-                <div className="mt-2 text-gray-400 font-bold text-xs">Ngoài ca</div>
+                <div className="mt-3 text-gray-400 font-bold text-sm">Ngoài ca</div>
               )}
             </button>
           ))}
@@ -8533,47 +8551,6 @@ function AttendanceView() {
           )}
         </div>
       </div>
-
-      {/* PIN modal */}
-      {sel && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => { setSel(null); setPin(""); }}>
-          <div className="bg-white rounded-3xl w-full max-w-sm shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
-            <div className="p-5 bg-gray-50 border-b text-center">
-              <h3 className="font-black text-lg text-gray-800">{sel.name}</h3>
-              <p className="text-xs font-bold text-gray-400 mt-0.5">
-                {sel.checked_in ? `Đang trong ca từ ${sel.check_in_at ? fmtTime(sel.check_in_at) : ""}` : "Chưa vào ca"}
-                {!sel.has_pin && " · Chưa đặt PIN"}
-              </p>
-            </div>
-            <div className="p-5">
-              <div className="flex justify-center gap-2 mb-4">
-                {[0, 1, 2, 3, 4, 5].map((i) => (
-                  <div key={i} className={`w-4 h-4 rounded-full border-2 ${pin.length > i ? "bg-primary-600 border-primary-600" : "border-gray-300"}`} />
-                ))}
-              </div>
-              <div className="grid grid-cols-3 gap-2 mb-4">
-                {["1","2","3","4","5","6","7","8","9","clear","0","del"].map((k) => (
-                  <button key={k} onClick={() => pressKey(k)}
-                    className="py-4 rounded-xl bg-gray-100 font-black text-xl text-gray-700 active:bg-gray-200 transition">
-                    {k === "del" ? "⌫" : k === "clear" ? "C" : k}
-                  </button>
-                ))}
-              </div>
-              {sel.checked_in ? (
-                <button onClick={() => doCheck("out")} disabled={busy || pin.length < 4}
-                  className="w-full py-4 rounded-2xl bg-red-500 text-white font-black text-lg uppercase shadow-lg active:scale-95 transition disabled:opacity-40">
-                  {busy ? "Đang xử lý…" : "Tan ca"}
-                </button>
-              ) : (
-                <button onClick={() => doCheck("in")} disabled={busy || pin.length < 4}
-                  className="w-full py-4 rounded-2xl bg-emerald-600 text-white font-black text-lg uppercase shadow-lg active:scale-95 transition disabled:opacity-40">
-                  {busy ? "Đang xử lý…" : "Vào ca"}
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

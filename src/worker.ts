@@ -2220,7 +2220,6 @@ async function handleAdminUpdateDeleteUser(env, userId, request) {
 async function handleAttendanceStaff(env) {
   const { results } = await env.DB.prepare(
     `SELECT u.id, u.username, u.full_name, u.role,
-            CASE WHEN u.pin IS NOT NULL AND u.pin != '' THEN 1 ELSE 0 END AS has_pin,
             a.check_in_at
      FROM users u
      LEFT JOIN attendance a ON a.user_id = u.id AND a.check_out_at IS NULL
@@ -2230,26 +2229,23 @@ async function handleAttendanceStaff(env) {
     id: r.id,
     name: r.full_name || r.username,
     role: r.role,
-    has_pin: !!r.has_pin,
     checked_in: !!r.check_in_at,
     check_in_at: r.check_in_at ? r.check_in_at + "Z" : null,
   })));
 }
 
-// Check-in/out bằng PIN — 1 row/ca: in = insert, out = set check_out_at
+// Check-in/out — 1 row/ca: in = insert, out = set check_out_at
+// Không yêu cầu PIN: nhân viên bấm thẳng vào thẻ tên trên máy POS chung.
 async function handleAttendanceCheck(env, body) {
   const userId = Number(body?.user_id);
-  const pin = String(body?.pin ?? "").trim();
   const action = body?.action;
   if (!userId || (action !== "in" && action !== "out")) {
     return json({ message: "Thi\u1EBFu user_id/action" }, 400);
   }
   const user = await env.DB.prepare(
-    "SELECT id, username, full_name, pin FROM users WHERE id = ?"
+    "SELECT id, username, full_name FROM users WHERE id = ?"
   ).bind(userId).first();
   if (!user) return json({ message: "Kh\xF4ng t\xECm th\u1EA5y nh\xE2n vi\xEAn" }, 404);
-  if (!user.pin) return json({ message: "Ch\u01B0a \u0111\u1EB7t PIN — nh\u1EDD qu\u1EA3n l\xFD c\u1EA5p PIN tr\u01B0\u1EDBc" }, 400);
-  if (user.pin !== pin) return json({ message: "Sai PIN" }, 403);
 
   const open = await env.DB.prepare(
     "SELECT id, check_in_at FROM attendance WHERE user_id = ? AND check_out_at IS NULL ORDER BY check_in_at DESC LIMIT 1"
