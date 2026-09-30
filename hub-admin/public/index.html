@@ -1,634 +1,549 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="vi">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>POS Hub Admin — Quản lý chuỗi quán</title>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Quản trị chấm công POS</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
-  /* In phiếu lương: chỉ hiện vùng phiếu */
-  @media print {
-    body > *:not(#printSheet) { display: none !important; }
-    #printSheet { display: block !important; position: static !important; }
-  }
+  @media print { body * { visibility:hidden } #slip-preview, #slip-preview * { visibility:visible }
+    #slip-preview { position:absolute; left:0; top:0; width:100% } }
 </style>
 </head>
-<body class="bg-gray-100 text-gray-800">
-
-<div id="app" class="min-h-screen"></div>
-
-<!-- Vùng in phiếu lương (ẩn màn hình, hiện khi print) -->
-<div id="printSheet" class="hidden bg-white p-10"></div>
-
+<body class="min-h-screen bg-slate-100">
+<div id="app"></div>
 <script>
-// ================= State =================
-const S = {
-  token: sessionStorage.getItem("cf_token") || "",
-  dbs: [], db: null,            // {account_id, account_name, uuid, name}
-  stores: [], store_id: "",
-  tab: "shifts",
-  shifts: [], users: [], payroll: [],
-};
-const $app = document.getElementById("app");
-const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
-  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const pt = (v) => {           // parse timestamp: ISO hoặc sqlite "YYYY-MM-DD HH:MM:SS"
-  if (!v) return null;
-  const s = String(v);
-  const d = new Date(s.includes("T") ? s : s.replace(" ", "T") + "Z");
-  return isNaN(d) ? null : d;
-};
-const fmtDT = (v) => { const d = pt(v); return d ? d.toLocaleString("vi-VN",
-  { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" }) : "—"; };
-const fmtD = (v) => { const d = pt(v); return d ? d.toLocaleDateString("vi-VN",
-  { day: "2-digit", month: "2-digit" }) : "—"; };
-const fmtMoney = (n) => new Intl.NumberFormat("vi-VN").format(Math.round(n || 0)) + " đ";
-const toLocalInput = (v) => {
-  const d = pt(v); if (!d) return "";
-  const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
-};
-const hoursOf = (r) => {
-  const a = pt(r.check_in_at), b = pt(r.check_out_at);
-  return a && b ? Math.max(0, (b - a) / 3600000) : null;
-};
+// ==================== STATE ====================
+// stores: danh sách quán [{name, url}] trong localStorage — url là tunnel URL
+// hoặc IP LAN của máy POS, vd https://pos-quan1.trycloudflare.com
+// sess: phiên đăng nhập vào 1 server POS {url, name, token} — sessionStorage
+const $ = (id) => document.getElementById(id);
+const stores = () => JSON.parse(localStorage.getItem("hubadmin_stores") || "[]");
+const saveStores = (s) => localStorage.setItem("hubadmin_stores", JSON.stringify(s));
+const S = () => JSON.parse(sessionStorage.getItem("hubadmin_sess") || "null");
+const setSess = (s) => s ? sessionStorage.setItem("hubadmin_sess", JSON.stringify(s))
+                         : sessionStorage.removeItem("hubadmin_sess");
 
-// ================= API =================
-const api = async (path, method, body) => {
-  const r = await fetch(path, {
-    method,
-    headers: { "Content-Type": "application/json", "x-cf-token": S.token },
-    body: body ? JSON.stringify(body) : undefined,
+let users = [];       // tài khoản server POS đang quản trị
+let shifts = [];      // ca làm trong khoảng đang xem
+let payrolls = [];    // phiếu lương
+let tab = "shifts";   // shifts | staff | month | payroll
+let shiftsLoaded = false;
+
+function fmtMoney(n) { return (Number(n) || 0).toLocaleString("vi-VN") + "đ"; }
+function fmtTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso); if (isNaN(d)) return "—";
+  return String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0");
+}
+function fmtDate(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso); if (isNaN(d)) return "—";
+  return String(d.getDate()).padStart(2,"0") + "/" + String(d.getMonth()+1).padStart(2,"0");
+}
+function fmtDT(iso) { return iso ? fmtDate(iso) + " " + fmtTime(iso) : "—"; }
+function hoursOf(r) { // giờ làm của 1 ca
+  if (!r.check_in_at) return 0;
+  const out = r.check_out_at ? new Date(r.check_out_at) : new Date();
+  return Math.max(0, (out - new Date(r.check_in_at)) / 3600000);
+}
+function isoToLocalInput(iso) { // ISO -> "YYYY-MM-DDTHH:mm" (giờ local)
+  if (!iso) return "";
+  const d = new Date(iso); if (isNaN(d)) return "";
+  const p = (x) => String(x).padStart(2,"0");
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function today() { return new Date().toISOString().slice(0,10); }
+function monthNow() { return new Date().toISOString().slice(0,7); }
+function normUrl(u) { return String(u || "").trim().replace(/\/+$/, ""); }
+
+async function api(path, opts = {}) { // gọi thẳng tới server POS
+  const s = S(); if (!s) throw new Error("Chưa đăng nhập");
+  const res = await fetch(s.url + path, {
+    ...opts,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${s.token}`,
+      ...(opts.headers || {}),
+    },
   });
-  return r.json().catch(() => ({ success: false, errors: [{ message: `HTTP ${r.status}` }] }));
-};
-const errMsg = (r) => (r.errors || []).map((e) => e.message || e.code).join("; ") || "lỗi không rõ";
-const q = async (sql, params = []) => {   // query 1 statement
-  const r = await api("/api/d1", "POST", { account_id: S.db.account_id, db_id: S.db.uuid, sql, params });
-  if (!r.success) throw new Error(errMsg(r));
-  const res = Array.isArray(r.result) ? r.result[0] : r.result;
-  return res?.results || [];
-};
-const raw = async (sql) => {              // multi-statement
-  const r = await api("/api/d1-raw", "POST", { account_id: S.db.account_id, db_id: S.db.uuid, sql });
-  if (!r.success) throw new Error(errMsg(r));
-  return r.result;
-};
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) { setSess(null); render(); throw new Error("Hết phiên — đăng nhập lại"); }
+  if (!res.ok) throw new Error(data.message || data.error || `HTTP ${res.status}`);
+  return data;
+}
 
-const SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS hub_stores (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, store_id TEXT UNIQUE NOT NULL, name TEXT,
-  api_key TEXT, device_id TEXT, last_sync_at TEXT, last_sync_detail TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE TABLE IF NOT EXISTS hub_orders (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, store_id TEXT NOT NULL, local_id INTEGER NOT NULL,
-  display_code TEXT, order_type TEXT, status TEXT, table_name TEXT, customer_phone TEXT,
-  total INTEGER NOT NULL DEFAULT 0, paid_at TEXT, created_at TEXT, updated_at TEXT,
-  items_json TEXT, synced_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(store_id, local_id)
-);
-CREATE TABLE IF NOT EXISTS hub_attendance (
-  store_id TEXT NOT NULL, local_id INTEGER, user_name TEXT,
-  check_in_at TEXT, check_out_at TEXT, note TEXT,
-  synced_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(store_id, local_id)
-);
-CREATE TABLE IF NOT EXISTS hub_users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, store_id TEXT NOT NULL,
-  name TEXT NOT NULL, pin TEXT, hourly_rate INTEGER NOT NULL DEFAULT 0,
-  active INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(store_id, name)
-);
-CREATE TABLE IF NOT EXISTS hub_payroll (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, store_id TEXT NOT NULL,
-  user_name TEXT NOT NULL, period TEXT NOT NULL,
-  hours REAL, rate INTEGER, bonus INTEGER DEFAULT 0, penalty INTEGER DEFAULT 0,
-  total INTEGER, note TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-`;
-// DB cũ từ thời hub-worker thiếu cột note / device_id — thêm nếu thiếu
-const SCHEMA_ALTERS = [
-  "ALTER TABLE hub_attendance ADD COLUMN note TEXT",
-  "ALTER TABLE hub_stores ADD COLUMN device_id TEXT",
-];
+function toast(msg, ok = true) {
+  const t = document.createElement("div");
+  t.className = `fixed bottom-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-xl text-sm text-white shadow-lg z-50 ${ok ? "bg-emerald-600" : "bg-red-600"}`;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 4000);
+}
 
-// ================= Flow: login → chọn DB → chọn quán =================
-function renderLogin(err) {
-  $app.innerHTML = `
-  <div class="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-emerald-600 to-emerald-900">
-    <div class="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md">
-      <h1 class="text-2xl font-black mb-1">POS Hub Admin</h1>
-      <p class="text-sm text-gray-500 mb-6">Đăng nhập bằng <b>CF API token</b>
-        (cần quyền <b>Account → D1: Edit</b>). Token chỉ dùng trong tab này, không lưu server.</p>
-      <input id="tok" type="password" placeholder="cfat_... / API token"
-        class="w-full px-4 py-3 rounded-xl border border-gray-300 font-mono text-sm mb-4">
-      ${err ? `<div class="bg-red-50 text-red-600 p-3 rounded-lg text-sm mb-4">${esc(err)}</div>` : ""}
-      <button onclick="doLogin()" class="w-full bg-emerald-600 text-white py-3 rounded-xl font-bold hover:bg-emerald-700">Đăng nhập</button>
+// ==================== SCREENS ====================
+function render() {
+  const s = S();
+  $("app").innerHTML = s ? mainHtml(s) : loginHtml();
+  bindCommon();
+  if (s) { bindMain(); loadUsers(); }
+  else bindLogin();
+}
+
+// ---------- Màn 1+2: chọn quán + đăng nhập ----------
+function loginHtml() {
+  const st = stores();
+  return `
+  <div class="max-w-md mx-auto px-4 py-10">
+    <h1 class="text-2xl font-bold text-slate-800 mb-1">Quản trị chấm công</h1>
+    <p class="text-sm text-slate-500 mb-6">Kết nối trực tiếp tới server POS của quán — mọi chỉnh sửa ghi vào dữ liệu thật tại quán.</p>
+
+    <div class="bg-white rounded-2xl shadow p-5 mb-4">
+      <h2 class="font-semibold text-slate-700 mb-3">Đăng nhập vào quán</h2>
+      <label class="text-xs text-slate-500">Chọn quán</label>
+      <select id="login-store" class="w-full border rounded-xl px-3 py-2 mb-3">
+        ${st.length ? st.map((x,i)=>`<option value="${i}">${esc(x.name)} — ${esc(x.url)}</option>`).join("")
+                     : `<option value="">(chưa có quán — thêm ở dưới)</option>`}
+      </select>
+      <label class="text-xs text-slate-500">Tài khoản admin</label>
+      <input id="login-user" class="w-full border rounded-xl px-3 py-2 mb-2" placeholder="username (vd: admin)"/>
+      <label class="text-xs text-slate-500">Mật khẩu</label>
+      <input id="login-pass" type="password" class="w-full border rounded-xl px-3 py-2 mb-3" placeholder="••••••"/>
+      <button id="btn-login" class="w-full bg-slate-800 text-white rounded-xl py-2 font-semibold">Đăng nhập</button>
+      <p id="login-err" class="text-red-600 text-sm mt-2"></p>
+      <p class="text-xs text-slate-400 mt-3">Lưu ý: trang HTTPS chỉ gọi được server quán qua URL HTTPS — dùng Cloudflare Tunnel URL (Bật tunnel trong Cấu hình POS). Nếu dùng IP LAN (http://192.168…) hãy mở trang này trên thiết bị cùng mạng và chấp nhận mixed-content, hoặc mở app POS → /quanly-chamcong.</p>
+    </div>
+
+    <div class="bg-white rounded-2xl shadow p-5">
+      <h2 class="font-semibold text-slate-700 mb-3">Quán đã lưu</h2>
+      <div id="store-list">${st.map((x,i)=>`
+        <div class="flex items-center gap-2 py-2 border-b last:border-0">
+          <div class="flex-1 min-w-0">
+            <div class="font-medium text-slate-800 truncate">${esc(x.name)}</div>
+            <div class="text-xs text-slate-400 truncate">${esc(x.url)}</div>
+          </div>
+          <button class="text-red-500 text-sm" data-del-store="${i}">Xoá</button>
+        </div>`).join("") || `<p class="text-sm text-slate-400">Chưa có quán nào.</p>`}
+      </div>
+      <div class="flex gap-2 mt-3">
+        <input id="ns-name" class="flex-1 border rounded-xl px-3 py-2 text-sm" placeholder="Tên quán (vd: Quán 1)"/>
+        <input id="ns-url" class="flex-[2] border rounded-xl px-3 py-2 text-sm" placeholder="https://xxx.trycloudflare.com"/>
+        <button id="btn-add-store" class="bg-emerald-600 text-white rounded-xl px-4 text-sm font-semibold">Thêm</button>
+      </div>
     </div>
   </div>`;
-  document.getElementById("tok").focus();
+}
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+function bindLogin() {
+  $("btn-add-store")?.addEventListener("click", () => {
+    const name = $("ns-name").value.trim(), url = normUrl($("ns-url").value);
+    if (!name || !url) return toast("Nhập tên + URL server", false);
+    const st = stores();
+    if (st.some(x => x.url === url)) return toast("URL đã tồn tại", false);
+    st.push({ name, url }); saveStores(st); render();
+  });
+  document.querySelectorAll("[data-del-store]").forEach(b =>
+    b.addEventListener("click", () => { const st = stores(); st.splice(+b.dataset.delStore, 1); saveStores(st); render(); }));
+  $("btn-login")?.addEventListener("click", doLogin);
+  $("login-pass")?.addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
 }
 
 async function doLogin() {
-  const tok = document.getElementById("tok").value.trim();
-  if (!tok) return;
-  S.token = tok;
-  renderLogin("Đang kiểm tra token...");
-  const r = await api("/api/login", "POST", {});
-  if (!r.success) { S.token = ""; renderLogin("Token không hợp lệ: " + errMsg(r)); return; }
-  sessionStorage.setItem("cf_token", tok);
-  loadDbs();
-}
-
-async function loadDbs() {
-  $app.innerHTML = `<div class="min-h-screen flex items-center justify-center text-gray-500">Đang tải danh sách database...</div>`;
+  const idx = $("login-store").value;
+  const st = stores();
+  if (idx === "" || !st[+idx]) return $("login-err").textContent = "Chọn quán trước";
+  const store = st[+idx];
+  $("login-err").textContent = "Đang kết nối…";
   try {
-    const r = await api("/api/dbs", "GET");
-    if (!r.success) throw new Error(errMsg(r));
-    S.dbs = r.result || [];
-    renderPickDb();
-  } catch (e) { renderLogin("Lỗi tải DB: " + e.message); }
-}
-
-function renderPickDb() {
-  $app.innerHTML = `
-  <div class="min-h-screen flex items-center justify-center p-4">
-    <div class="bg-white p-8 rounded-2xl shadow-xl w-full max-w-lg">
-      <h2 class="text-xl font-black mb-4">Chọn database D1</h2>
-      <div class="space-y-2 mb-4">
-        ${S.dbs.map((d, i) => `
-          <button onclick="pickDb(${i})"
-            class="w-full text-left px-4 py-3 rounded-xl border border-gray-200 hover:border-emerald-500 hover:bg-emerald-50 transition">
-            <div class="font-bold">${esc(d.name)}</div>
-            <div class="text-xs text-gray-400 font-mono">${esc(d.account_name)} · ${esc(d.uuid.slice(0, 8))}…</div>
-          </button>`).join("") || `<p class="text-gray-400 text-sm">Chưa có database nào</p>`}
-      </div>
-      <div class="flex gap-2 border-t pt-4">
-        <input id="newDb" placeholder="tạo DB mới, VD: pos-hub"
-          class="flex-1 px-3 py-2 rounded-xl border border-gray-300 font-mono text-sm">
-        <button onclick="createDb()" class="px-4 py-2 bg-emerald-600 text-white rounded-xl font-bold text-sm">Tạo</button>
-      </div>
-      <button onclick="logout()" class="mt-4 text-sm text-gray-400 hover:text-red-500 font-bold">Đăng xuất</button>
-    </div>
-  </div>`;
-}
-
-async function createDb() {
-  const name = document.getElementById("newDb").value.trim().toLowerCase();
-  if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(name)) return alert("Tên chỉ gồm chữ thường, số, - _");
-  const db = S.dbs[0];
-  const account_id = db ? db.account_id : (await api("/api/dbs", "GET")).result?.[0]?.account_id;
-  // Nếu chưa có DB nào thì /api/dbs không trả account → cần lấy account riêng
-  let accId = db?.account_id;
-  if (!accId) {
-    // token chưa thấy account vì chưa có DB — vẫn cần account_id: hỏi user nhập tay
-    accId = prompt("Chưa xác định được account — nhập Account ID (Cloudflare → Workers → Overview):");
-    if (!accId) return;
-  }
-  const r = await api("/api/d1-create", "POST", { account_id: accId, name });
-  if (!r.success) return alert("Không tạo được: " + errMsg(r));
-  loadDbs();
-}
-
-async function pickDb(i) {
-  S.db = S.dbs[i];
-  $app.innerHTML = `<div class="min-h-screen flex items-center justify-center text-gray-500">Đang khởi tạo schema...</div>`;
-  try {
-    await raw(SCHEMA_SQL);
-    for (const a of SCHEMA_ALTERS) { try { await raw(a); } catch {} }
-    S.stores = await q("SELECT store_id, name, device_id, last_sync_at FROM hub_stores ORDER BY store_id");
-    renderPickStore();
+    const res = await fetch(store.url + "/api/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: $("login-user").value.trim(), password: $("login-pass").value }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.message || `HTTP ${res.status}`);
+    if (data.user?.role !== "admin") throw new Error("Chỉ tài khoản admin mới quản lý chấm công");
+    setSess({ url: store.url, name: store.name, token: data.access_token, user: data.user });
+    toast("Đã đăng nhập " + store.name);
+    render();
   } catch (e) {
-    alert("Lỗi: " + e.message);
-    renderPickDb();
+    $("login-err").textContent = e.message || "Không kết nối được server";
   }
 }
 
-function renderPickStore() {
-  $app.innerHTML = `
-  <div class="min-h-screen flex items-center justify-center p-4">
-    <div class="bg-white p-8 rounded-2xl shadow-xl w-full max-w-lg">
-      <p class="text-xs font-bold text-gray-400 uppercase mb-1">Database: ${esc(S.db.name)}</p>
-      <h2 class="text-xl font-black mb-4">Chọn quán</h2>
-      <div class="space-y-2 mb-4">
-        ${S.stores.map((s, i) => `
-          <button onclick="pickStore(${i})"
-            class="w-full text-left px-4 py-3 rounded-xl border border-gray-200 hover:border-emerald-500 hover:bg-emerald-50 transition">
-            <div class="font-bold">${esc(s.name || s.store_id)}</div>
-            <div class="text-xs text-gray-400 font-mono">${esc(s.store_id)} · sync cuối: ${fmtDT(s.last_sync_at)}</div>
-          </button>`).join("") || `<p class="text-gray-400 text-sm">Chưa có quán nào sync lên DB này</p>`}
-      </div>
-      <div class="flex gap-2 border-t pt-4">
-        <input id="newStore" placeholder="mã quán mới, VD: quan-02"
-          class="flex-1 px-3 py-2 rounded-xl border border-gray-300 font-mono text-sm">
-        <button onclick="createStore()" class="px-4 py-2 bg-emerald-600 text-white rounded-xl font-bold text-sm">Tạo</button>
-      </div>
-      <button onclick="renderPickDb()" class="mt-4 text-sm text-gray-400 hover:text-emerald-600 font-bold">← Chọn DB khác</button>
-    </div>
-  </div>`;
-}
-
-async function createStore() {
-  const id = document.getElementById("newStore").value.trim();
-  if (!id) return;
-  await q("INSERT INTO hub_stores (store_id, name, api_key) VALUES (?, ?, 'admin') ON CONFLICT(store_id) DO NOTHING", [id, id]);
-  S.stores = await q("SELECT store_id, name, device_id, last_sync_at FROM hub_stores ORDER BY store_id");
-  renderPickStore();
-}
-
-async function pickStore(i) {
-  S.store_id = S.stores[i].store_id;
-  await reloadAll();
-  render();
-}
-
-function logout() {
-  sessionStorage.removeItem("cf_token");
-  S.token = ""; S.db = null;
-  renderLogin();
-}
-
-async function reloadAll() {
-  const sid = S.store_id;
-  S.users = await q("SELECT * FROM hub_users WHERE store_id = ? ORDER BY name", [sid]).catch(() => []);
-  S.shifts = await q("SELECT * FROM hub_attendance WHERE store_id = ? ORDER BY check_in_at DESC LIMIT 2000", [sid]).catch(() => []);
-  S.payroll = await q("SELECT * FROM hub_payroll WHERE store_id = ? ORDER BY id DESC LIMIT 100", [sid]).catch(() => []);
-}
-
-// ================= Main shell =================
-function render() {
-  const tabs = [
-    ["shifts", "Ca làm"], ["users", "Nhân viên"], ["month", "Bảng công"], ["payroll", "Phiếu lương"],
-  ];
-  $app.innerHTML = `
-  <div class="max-w-6xl mx-auto p-4 md:p-6">
-    <div class="bg-white rounded-2xl border border-gray-200 p-4 flex flex-wrap items-center gap-3 mb-4">
-      <div class="bg-emerald-100 px-3 py-2 rounded-xl font-black text-emerald-700">HUB</div>
-      <div class="flex-1">
-        <div class="font-black">${esc(S.store_id)}</div>
-        <div class="text-xs text-gray-400 font-mono">${esc(S.db.name)} · ${esc(S.db.account_name)}</div>
-      </div>
-      <button onclick="renderPickStore()" class="px-3 py-2 rounded-xl text-xs font-bold bg-gray-100 hover:bg-gray-200">Đổi quán</button>
-      <button onclick="renderPickDb()" class="px-3 py-2 rounded-xl text-xs font-bold bg-gray-100 hover:bg-gray-200">Đổi DB</button>
-      <button onclick="logout()" class="px-3 py-2 rounded-xl text-xs font-bold bg-red-50 text-red-600 hover:bg-red-100">Đăng xuất</button>
-    </div>
-    <div class="flex gap-2 mb-4 flex-wrap">
-      ${tabs.map(([id, label]) => `
-        <button onclick="S.tab='${id}';render()"
-          class="px-5 py-2.5 rounded-xl font-bold text-sm ${S.tab === id ? "bg-emerald-600 text-white" : "bg-white text-gray-600 border border-gray-200"}">${label}</button>`).join("")}
-      <button onclick="reloadAll().then(render)" class="ml-auto px-4 py-2.5 rounded-xl text-sm font-bold bg-blue-100 text-blue-700">Tải lại</button>
-    </div>
-    <div id="tabBody"></div>
-  </div>`;
-  const body = document.getElementById("tabBody");
-  if (S.tab === "shifts") renderShifts(body);
-  else if (S.tab === "users") renderUsers(body);
-  else if (S.tab === "month") renderMonth(body);
-  else renderPayroll(body);
-}
-
-// ================= Tab: Nhân viên (tài khoản chấm công) =================
-function renderUsers(el) {
-  el.innerHTML = `
-  <div class="bg-white rounded-2xl border border-gray-200 overflow-hidden">
-    <div class="p-4 border-b bg-gray-50 flex items-center justify-between">
-      <h3 class="font-black">Tài khoản chấm công</h3>
-      <p class="text-xs text-gray-400">Nhân viên tạo ở đây sẽ xuất hiện trên tablet quán sau ~1 phút</p>
-    </div>
-    <table class="w-full text-sm">
-      <thead><tr class="border-b bg-gray-50 text-left">
-        <th class="p-3 text-[10px] font-black text-gray-400 uppercase">Tên</th>
-        <th class="p-3 text-[10px] font-black text-gray-400 uppercase">PIN</th>
-        <th class="p-3 text-[10px] font-black text-gray-400 uppercase">Lương/giờ</th>
-        <th class="p-3 text-[10px] font-black text-gray-400 uppercase">Hoạt động</th>
-        <th class="p-3"></th>
-      </tr></thead>
-      <tbody>
-        ${S.users.map((u) => `
-        <tr class="border-b ${u.active ? "" : "opacity-50"}">
-          <td class="p-3"><input id="un_${u.id}" value="${esc(u.name)}" class="px-2 py-1 border rounded-lg w-40"></td>
-          <td class="p-3"><input id="up_${u.id}" value="${esc(u.pin || "")}" class="px-2 py-1 border rounded-lg w-20 font-mono" placeholder="—"></td>
-          <td class="p-3"><input id="ur_${u.id}" type="number" value="${u.hourly_rate || 0}" class="px-2 py-1 border rounded-lg w-28" step="1000"></td>
-          <td class="p-3"><input id="ua_${u.id}" type="checkbox" ${u.active ? "checked" : ""} class="w-4 h-4"></td>
-          <td class="p-3 text-right whitespace-nowrap">
-            <button onclick="saveUser(${u.id})" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-100 text-emerald-700">Lưu</button>
-            <button onclick="delUser(${u.id},'${esc(u.name)}')" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-red-50 text-red-500">Xóa</button>
-          </td>
-        </tr>`).join("")}
-        <tr class="bg-emerald-50/50">
-          <td class="p-3"><input id="nu_name" placeholder="Tên nhân viên" class="px-2 py-1 border rounded-lg w-40"></td>
-          <td class="p-3"><input id="nu_pin" placeholder="PIN" class="px-2 py-1 border rounded-lg w-20 font-mono"></td>
-          <td class="p-3"><input id="nu_rate" type="number" placeholder="0" class="px-2 py-1 border rounded-lg w-28" step="1000"></td>
-          <td class="p-3"></td>
-          <td class="p-3 text-right"><button onclick="addUser()" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 text-white">+ Thêm</button></td>
-        </tr>
-      </tbody>
-    </table>
-  </div>`;
-}
-async function addUser() {
-  const name = document.getElementById("nu_name").value.trim();
-  if (!name) return;
-  await q("INSERT INTO hub_users (store_id, name, pin, hourly_rate, active) VALUES (?,?,?,?,1)",
-    [S.store_id, name, document.getElementById("nu_pin").value.trim() || null,
-     Number(document.getElementById("nu_rate").value) || 0]);
-  await reloadAll(); render();
-}
-async function saveUser(id) {
-  await q("UPDATE hub_users SET name=?, pin=?, hourly_rate=?, active=? WHERE id=?",
-    [document.getElementById("un_" + id).value.trim(),
-     document.getElementById("up_" + id).value.trim() || null,
-     Number(document.getElementById("ur_" + id).value) || 0,
-     document.getElementById("ua_" + id).checked ? 1 : 0, id]);
-  await reloadAll(); render();
-}
-async function delUser(id, name) {
-  if (!confirm(`Xóa nhân viên "${name}"?`)) return;
-  await q("DELETE FROM hub_users WHERE id=?", [id]);
-  await reloadAll(); render();
-}
-
-// ================= Tab: Ca làm =================
-let shiftFrom = new Date().toISOString().slice(0, 10);
-let shiftTo = shiftFrom;
-let shiftUser = "";
-function renderShifts(el) {
-  const rows = S.shifts.filter((r) => {
-    const d = pt(r.check_in_at);
-    if (!d) return false;
-    const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    return day >= shiftFrom && day <= shiftTo && (!shiftUser || r.user_name === shiftUser);
-  });
-  const names = [...new Set(S.shifts.map((s) => s.user_name).concat(S.users.map((u) => u.name)))].filter(Boolean).sort();
-  el.innerHTML = `
-  <div class="bg-white rounded-2xl border border-gray-200 p-4 flex flex-wrap items-center gap-3 mb-4">
-    <input type="date" value="${shiftFrom}" onchange="shiftFrom=this.value;render()" class="px-3 py-2 border rounded-xl text-sm font-bold">
-    <span class="text-gray-400">→</span>
-    <input type="date" value="${shiftTo}" onchange="shiftTo=this.value;render()" class="px-3 py-2 border rounded-xl text-sm font-bold">
-    <select onchange="shiftUser=this.value;render()" class="px-3 py-2 border rounded-xl text-sm font-bold">
-      <option value="">Tất cả nhân viên</option>
-      ${names.map((n) => `<option ${n === shiftUser ? "selected" : ""}>${esc(n)}</option>`).join("")}
-    </select>
-    <button onclick="openShiftModal()" class="ml-auto px-4 py-2 rounded-xl text-sm font-bold bg-emerald-600 text-white">+ Thêm ca (quên chấm)</button>
-  </div>
-  <div class="bg-white rounded-2xl border border-gray-200 overflow-hidden">
-    <table class="w-full text-sm">
-      <thead><tr class="border-b bg-gray-50 text-left">
-        <th class="p-3 text-[10px] font-black text-gray-400 uppercase">Nhân viên</th>
-        <th class="p-3 text-[10px] font-black text-gray-400 uppercase">Vào</th>
-        <th class="p-3 text-[10px] font-black text-gray-400 uppercase">Ra</th>
-        <th class="p-3 text-[10px] font-black text-gray-400 uppercase text-right">Giờ</th>
-        <th class="p-3 text-[10px] font-black text-gray-400 uppercase">Ghi chú</th>
-        <th class="p-3"></th>
-      </tr></thead>
-      <tbody>
-        ${rows.map((r) => {
-          const h = hoursOf(r);
-          return `<tr class="border-b">
-            <td class="p-3 font-bold">${esc(r.user_name)}</td>
-            <td class="p-3">${fmtDT(r.check_in_at)}</td>
-            <td class="p-3">${r.check_out_at ? fmtDT(r.check_out_at) : '<span class="text-emerald-600 font-black text-xs">● Đang trong ca</span>'}</td>
-            <td class="p-3 text-right font-black">${h != null ? h.toFixed(1) + "h" : "—"}</td>
-            <td class="p-3 text-xs text-gray-400">${esc(r.note || (r.local_id == null ? "nhập tay" : ""))}</td>
-            <td class="p-3 text-right whitespace-nowrap">
-              ${!r.check_out_at ? `<button onclick="closeShift(${r.id})" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-100 text-amber-700">Tan ca</button>` : ""}
-              <button onclick="openShiftModal(${r.id})" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-gray-100">Sửa</button>
-              <button onclick="delShift(${r.id})" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-red-50 text-red-500">Xóa</button>
-            </td>
-          </tr>`;
-        }).join("") || '<tr><td colspan="6" class="p-10 text-center text-gray-400">Không có ca nào trong kỳ</td></tr>'}
-      </tbody>
-    </table>
-  </div>
-  <div id="shiftModal"></div>`;
-}
-
-function openShiftModal(id) {
-  const r = id ? S.shifts.find((x) => x.id === id) : null;
-  const names = [...new Set(S.users.filter(u=>u.active).map((u) => u.name).concat(S.shifts.map((s) => s.user_name)))].filter(Boolean).sort();
-  document.getElementById("shiftModal").innerHTML = `
-  <div class="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50" onclick="if(event.target===this)this.remove()">
-    <div class="bg-white rounded-2xl p-6 w-full max-w-md space-y-4">
-      <h3 class="font-black text-lg">${r ? "Sửa ca làm" : "Thêm ca thủ công"}</h3>
-      <div>
-        <label class="text-xs font-bold text-gray-500">Nhân viên</label>
-        <input id="sm_name" list="sm_names" value="${esc(r?.user_name || "")}" class="w-full px-3 py-2 border rounded-xl">
-        <datalist id="sm_names">${names.map((n) => `<option value="${esc(n)}">`).join("")}</datalist>
-      </div>
-      <div class="grid grid-cols-2 gap-3">
-        <div><label class="text-xs font-bold text-gray-500">Vào ca</label>
-          <input id="sm_in" type="datetime-local" value="${toLocalInput(r?.check_in_at)}" class="w-full px-3 py-2 border rounded-xl"></div>
-        <div><label class="text-xs font-bold text-gray-500">Tan ca (để trống = đang làm)</label>
-          <input id="sm_out" type="datetime-local" value="${toLocalInput(r?.check_out_at)}" class="w-full px-3 py-2 border rounded-xl"></div>
-      </div>
-      <div><label class="text-xs font-bold text-gray-500">Ghi chú</label>
-        <input id="sm_note" value="${esc(r?.note || "")}" placeholder="VD: quên chấm công" class="w-full px-3 py-2 border rounded-xl"></div>
-      <div class="flex gap-2 pt-2">
-        <button onclick="saveShift(${r ? r.id : "null"})" class="flex-1 py-2.5 rounded-xl font-bold bg-emerald-600 text-white">Lưu</button>
-        <button onclick="document.getElementById('shiftModal').innerHTML=''" class="px-5 py-2.5 rounded-xl font-bold bg-gray-200">Hủy</button>
-      </div>
-    </div>
-  </div>`;
-}
-
-async function saveShift(id) {
-  const name = document.getElementById("sm_name").value.trim();
-  const ci = document.getElementById("sm_in").value;
-  const co = document.getElementById("sm_out").value;
-  const note = document.getElementById("sm_note").value.trim();
-  if (!name || !ci) return alert("Cần tên nhân viên + giờ vào");
-  const ciIso = new Date(ci).toISOString();
-  const coIso = co ? new Date(co).toISOString() : null;
-  if (id) {
-    await q("UPDATE hub_attendance SET user_name=?, check_in_at=?, check_out_at=?, note=? WHERE id=?",
-      [name, ciIso, coIso, note || null, id]);
-  } else {
-    await q(`INSERT INTO hub_attendance (store_id, local_id, user_name, check_in_at, check_out_at, note, synced_at)
-             VALUES (?, NULL, ?, ?, ?, ?, datetime('now'))`,
-      [S.store_id, name, ciIso, coIso, note || "nhập tay"]);
-  }
-  document.getElementById("shiftModal").innerHTML = "";
-  await reloadAll(); render();
-}
-async function closeShift(id) {
-  await q("UPDATE hub_attendance SET check_out_at=? WHERE id=?", [new Date().toISOString(), id]);
-  await reloadAll(); render();
-}
-async function delShift(id) {
-  if (!confirm("Xóa ca làm này?")) return;
-  await q("DELETE FROM hub_attendance WHERE id=?", [id]);
-  await reloadAll(); render();
-}
-
-// ================= Tab: Bảng công tháng =================
-let monthPick = new Date().toISOString().slice(0, 7); // YYYY-MM (UTC, đủ dùng)
-function renderMonth(el) {
-  const [y, m] = monthPick.split("-").map(Number);
-  const rows = S.shifts.filter((r) => {
-    const d = pt(r.check_in_at);
-    return d && d.getMonth() + 1 === m && d.getFullYear() === y;
-  });
-  const byUser = {};
-  for (const r of rows) {
-    const n = r.user_name || "?";
-    byUser[n] = byUser[n] || { shifts: 0, hours: 0, days: new Set(), rows: [] };
-    byUser[n].shifts++;
-    const h = hoursOf(r);
-    if (h != null) byUser[n].hours += h;
-    const d = pt(r.check_in_at);
-    byUser[n].days.add(d.toDateString());
-    byUser[n].rows.push(r);
-  }
-  el.innerHTML = `
-  <div class="bg-white rounded-2xl border border-gray-200 p-4 flex items-center gap-3 mb-4">
-    <label class="text-sm font-bold text-gray-500">Tháng</label>
-    <input type="month" value="${monthPick}" onchange="monthPick=this.value;render()" class="px-3 py-2 border rounded-xl text-sm font-bold">
-  </div>
-  <div class="bg-white rounded-2xl border border-gray-200 overflow-hidden">
-    <table class="w-full text-sm">
-      <thead><tr class="border-b bg-gray-50 text-left">
-        <th class="p-3 text-[10px] font-black text-gray-400 uppercase">Nhân viên</th>
-        <th class="p-3 text-[10px] font-black text-gray-400 uppercase text-right">Số ngày</th>
-        <th class="p-3 text-[10px] font-black text-gray-400 uppercase text-right">Số ca</th>
-        <th class="p-3 text-[10px] font-black text-gray-400 uppercase text-right">Tổng giờ</th>
-      </tr></thead>
-      <tbody>
-        ${Object.entries(byUser).map(([name, v]) => `
-          <tr class="border-b cursor-pointer hover:bg-gray-50" onclick="document.getElementById('mu_${esc(name)}').classList.toggle('hidden')">
-            <td class="p-3 font-bold">${esc(name)}</td>
-            <td class="p-3 text-right">${v.days.size}</td>
-            <td class="p-3 text-right">${v.shifts}</td>
-            <td class="p-3 text-right font-black text-emerald-700">${v.hours.toFixed(1)}h</td>
-          </tr>
-          <tr id="mu_${esc(name)}" class="hidden"><td colspan="4" class="p-3 bg-gray-50">
-            ${v.rows.map((r) => {
-              const h = hoursOf(r);
-              return `<div class="flex justify-between text-xs py-1 border-b border-gray-100">
-                <span>${fmtD(r.check_in_at)} — ${fmtDT(r.check_in_at)} → ${r.check_out_at ? fmtDT(r.check_out_at) : "đang làm"}</span>
-                <b>${h != null ? h.toFixed(1) + "h" : "—"}</b></div>`;
-            }).join("")}
-          </td></tr>`).join("") || '<tr><td colspan="4" class="p-10 text-center text-gray-400">Không có dữ liệu tháng này</td></tr>'}
-      </tbody>
-    </table>
-  </div>`;
-}
-
-// ================= Tab: Phiếu lương =================
-let pr = { name: "", month: new Date().toISOString().slice(0, 7), rate: 0, bonus: 0, penalty: 0, note: "" };
-function renderPayroll(el) {
-  const names = [...new Set(S.users.map((u) => u.name).concat(S.shifts.map((s) => s.user_name)))].filter(Boolean).sort();
-  const [y, m] = pr.month.split("-").map(Number);
-  const shifts = S.shifts.filter((r) => {
-    const d = pt(r.check_in_at);
-    return d && d.getMonth() + 1 === m && d.getFullYear() === y && r.user_name === pr.name;
-  });
-  const hours = shifts.reduce((t, r) => t + (hoursOf(r) || 0), 0);
-  const total = Math.round(hours * pr.rate + pr.bonus - pr.penalty);
-  el.innerHTML = `
-  <div class="grid md:grid-cols-2 gap-4">
-    <div class="bg-white rounded-2xl border border-gray-200 p-5 space-y-3">
-      <h3 class="font-black">Tạo phiếu lương</h3>
-      <div>
-        <label class="text-xs font-bold text-gray-500">Nhân viên</label>
-        <select onchange="pr.name=this.value;render()" class="w-full px-3 py-2 border rounded-xl text-sm font-bold">
-          <option value="">— chọn —</option>
-          ${names.map((n) => `<option ${n === pr.name ? "selected" : ""}>${esc(n)}</option>`).join("")}
-        </select>
-      </div>
-      <div>
-        <label class="text-xs font-bold text-gray-500">Kỳ lương</label>
-        <input type="month" value="${pr.month}" onchange="pr.month=this.value;render()" class="w-full px-3 py-2 border rounded-xl text-sm font-bold">
-      </div>
-      <div class="grid grid-cols-3 gap-2">
-        <div><label class="text-xs font-bold text-gray-500">Lương/giờ</label>
-          <input type="number" value="${pr.rate}" step="1000" onchange="pr.rate=+this.value;render()" class="w-full px-3 py-2 border rounded-xl text-sm"></div>
-        <div><label class="text-xs font-bold text-gray-500">Thưởng</label>
-          <input type="number" value="${pr.bonus}" step="1000" onchange="pr.bonus=+this.value;render()" class="w-full px-3 py-2 border rounded-xl text-sm"></div>
-        <div><label class="text-xs font-bold text-gray-500">Phạt</label>
-          <input type="number" value="${pr.penalty}" step="1000" onchange="pr.penalty=+this.value;render()" class="w-full px-3 py-2 border rounded-xl text-sm"></div>
-      </div>
-      <div><label class="text-xs font-bold text-gray-500">Ghi chú</label>
-        <input value="${esc(pr.note)}" onchange="pr.note=this.value" class="w-full px-3 py-2 border rounded-xl text-sm" placeholder="VD: thưởng bán chạy"></div>
-      <div class="text-sm bg-gray-50 rounded-xl p-3">
-        ${pr.name ? `Kỳ ${pr.month}: <b>${shifts.length}</b> ca · <b>${hours.toFixed(1)}</b> giờ → tổng <b class="text-emerald-700">${fmtMoney(total)}</b>` : "Chọn nhân viên để tính"}
-      </div>
-      <div class="flex gap-2">
-        <button onclick="savePayroll(${hours}, ${total})" ${!pr.name ? "disabled" : ""}
-          class="flex-1 py-2.5 rounded-xl font-bold bg-emerald-600 text-white disabled:opacity-50">Lưu phiếu</button>
-        <button onclick="printPayroll(${hours}, ${total}, ${shifts.length})" ${!pr.name ? "disabled" : ""}
-          class="flex-1 py-2.5 rounded-xl font-bold bg-blue-600 text-white disabled:opacity-50">Xuất PDF / In</button>
-      </div>
-    </div>
-    <div class="bg-white rounded-2xl border border-gray-200 p-5">
-      <h3 class="font-black mb-3">Phiếu đã tạo</h3>
-      <div class="space-y-2 max-h-96 overflow-y-auto">
-        ${S.payroll.map((p) => `
-          <div class="flex items-center justify-between border rounded-xl px-3 py-2 text-sm">
-            <div><b>${esc(p.user_name)}</b> · ${esc(p.period)} · ${p.hours?.toFixed(1)}h</div>
-            <div class="flex items-center gap-2">
-              <b class="text-emerald-700">${fmtMoney(p.total)}</b>
-              <button onclick="reprintPayroll(${p.id})" class="px-2 py-1 rounded-lg text-xs font-bold bg-gray-100">In lại</button>
-            </div>
-          </div>`).join("") || '<p class="text-gray-400 text-sm">Chưa có phiếu nào</p>'}
-      </div>
-    </div>
-  </div>`;
-}
-
-async function savePayroll(hours, total) {
-  await q(`INSERT INTO hub_payroll (store_id, user_name, period, hours, rate, bonus, penalty, total, note)
-           VALUES (?,?,?,?,?,?,?,?,?)`,
-    [S.store_id, pr.name, pr.month, hours, pr.rate, pr.bonus, pr.penalty, total, pr.note || null]);
-  await reloadAll(); render();
-}
-
-function slipHtml(p, shiftCount) {
+// ---------- Màn 3: quản trị ----------
+function mainHtml(s) {
+  const tabs = [["shifts","Ca làm"],["staff","Nhân viên"],["month","Bảng công"],["payroll","Phiếu lương"]];
   return `
-  <div style="font-family:system-ui;max-width:600px;margin:0 auto;border:2px solid #000;padding:24px">
-    <h1 style="text-align:center;font-size:20px;font-weight:900;margin:0">PHIẾU LƯƠNG</h1>
-    <p style="text-align:center;color:#666;margin:4px 0 20px">Quán: ${esc(S.store_id)} — Kỳ: ${esc(p.period)}</p>
-    <table style="width:100%;border-collapse:collapse;font-size:14px">
-      <tr><td style="padding:8px;border:1px solid #ddd">Nhân viên</td><td style="padding:8px;border:1px solid #ddd;font-weight:700">${esc(p.user_name)}</td></tr>
-      <tr><td style="padding:8px;border:1px solid #ddd">Số ca / Tổng giờ</td><td style="padding:8px;border:1px solid #ddd">${shiftCount} ca — ${Number(p.hours).toFixed(1)} giờ</td></tr>
-      <tr><td style="padding:8px;border:1px solid #ddd">Đơn giá giờ</td><td style="padding:8px;border:1px solid #ddd">${fmtMoney(p.rate)}</td></tr>
-      <tr><td style="padding:8px;border:1px solid #ddd">Lương giờ</td><td style="padding:8px;border:1px solid #ddd">${fmtMoney(p.hours * p.rate)}</td></tr>
-      <tr><td style="padding:8px;border:1px solid #ddd">Thưởng</td><td style="padding:8px;border:1px solid #ddd;color:#059669">+ ${fmtMoney(p.bonus)}</td></tr>
-      <tr><td style="padding:8px;border:1px solid #ddd">Phạt</td><td style="padding:8px;border:1px solid #ddd;color:#dc2626">− ${fmtMoney(p.penalty)}</td></tr>
-      <tr><td style="padding:8px;border:1px solid #ddd;font-weight:900">THỰC LĨNH</td>
-          <td style="padding:8px;border:1px solid #ddd;font-weight:900;font-size:18px">${fmtMoney(p.total)}</td></tr>
-    </table>
-    ${p.note ? `<p style="margin-top:12px;font-size:13px;color:#444">Ghi chú: ${esc(p.note)}</p>` : ""}
-    <div style="display:flex;justify-content:space-between;margin-top:40px;font-size:13px">
-      <div style="text-align:center"><b>Người lập</b><br><br><br>……………</div>
-      <div style="text-align:center"><b>Nhân viên</b><br><br><br>……………</div>
+  <div class="max-w-5xl mx-auto px-4 py-6">
+    <div class="flex items-center justify-between mb-5 flex-wrap gap-2">
+      <div>
+        <h1 class="text-xl font-bold text-slate-800">${esc(s.name)} — Quản trị chấm công</h1>
+        <div class="text-xs text-slate-400">${esc(s.url)}</div>
+      </div>
+      <button id="btn-logout" class="text-sm text-slate-500 underline">Đăng xuất</button>
     </div>
-    <p style="margin-top:24px;font-size:11px;color:#999;text-align:center">In lúc ${new Date().toLocaleString("vi-VN")}</p>
+    <div class="flex gap-2 mb-5 flex-wrap">
+      ${tabs.map(([k,l])=>`<button data-tab="${k}" class="px-4 py-2 rounded-xl text-sm font-semibold ${tab===k?"bg-slate-800 text-white":"bg-white text-slate-600 shadow"}">${l}</button>`).join("")}
+    </div>
+    <div id="tab-content"></div>
+  </div>
+  <div id="modal-root"></div>`;
+}
+function bindCommon() {}
+function bindMain() {
+  document.querySelectorAll("[data-tab]").forEach(b =>
+    b.addEventListener("click", () => { tab = b.dataset.tab; render(); }));
+  $("btn-logout").addEventListener("click", () => { setSess(null); render(); });
+}
+
+async function loadUsers() {
+  try {
+    users = await api("/api/admin/users");
+    renderTab();
+  } catch (e) { toast(e.message, false); }
+}
+async function loadShifts() {
+  const from = $("f-from")?.value || today();
+  const to = $("f-to")?.value || today();
+  shifts = await api(`/api/admin/attendance?from=${from}&to=${to}`);
+  renderTab();
+}
+function renderTab() {
+  const c = $("tab-content"); if (!c) return;
+  if (tab === "shifts") {
+    c.innerHTML = shiftsHtml(); bindShifts();
+    if (!shiftsLoaded) { shiftsLoaded = true; loadShifts().catch(e => toast(e.message, false)); }
+  }
+  else if (tab === "staff") c.innerHTML = staffHtml(), bindStaff();
+  else if (tab === "month") c.innerHTML = monthHtml(), bindMonth();
+  else c.innerHTML = payrollHtml(), bindPayroll();
+}
+
+// ---------- Tab Ca làm ----------
+function shiftsHtml() {
+  return `
+  <div class="bg-white rounded-2xl shadow p-5">
+    <div class="flex gap-2 items-end flex-wrap mb-4">
+      <div><label class="text-xs text-slate-500">Từ ngày</label>
+        <input id="f-from" type="date" value="${today()}" class="border rounded-xl px-3 py-2"/></div>
+      <div><label class="text-xs text-slate-500">Đến ngày</label>
+        <input id="f-to" type="date" value="${today()}" class="border rounded-xl px-3 py-2"/></div>
+      <button id="btn-load-shifts" class="bg-slate-800 text-white rounded-xl px-4 py-2 text-sm font-semibold">Xem</button>
+      <button id="btn-add-shift" class="bg-emerald-600 text-white rounded-xl px-4 py-2 text-sm font-semibold">+ Thêm ca (quên chấm)</button>
+    </div>
+    <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead><tr class="text-left text-slate-400 border-b">
+        <th class="py-2">Nhân viên</th><th>Ngày</th><th>Vào</th><th>Ra</th><th>Giờ</th><th></th></tr></thead>
+      <tbody>${shifts.map(r => `
+        <tr class="border-b last:border-0">
+          <td class="py-2 font-medium">${esc(r.name || "?")}</td>
+          <td>${fmtDate(r.check_in_at)}</td>
+          <td>${fmtTime(r.check_in_at)}</td>
+          <td>${r.check_out_at ? fmtTime(r.check_out_at) : '<span class="text-amber-600">đang làm</span>'}</td>
+          <td>${hoursOf(r).toFixed(1)}h</td>
+          <td class="text-right whitespace-nowrap">
+            ${!r.check_out_at ? `<button class="text-amber-600 text-xs mr-2" data-close="${r.id}">Tan ca</button>` : ""}
+            <button class="text-blue-600 text-xs mr-2" data-edit="${r.id}">Sửa</button>
+            <button class="text-red-500 text-xs" data-del="${r.id}">Xoá</button>
+          </td>
+        </tr>`).join("") || `<tr><td colspan="6" class="py-6 text-center text-slate-400">Chưa có dữ liệu — chọn ngày rồi bấm Xem</td></tr>`}
+      </tbody>
+    </table></div>
   </div>`;
 }
-
-function printPayroll(hours, total, shiftCount) {
-  document.getElementById("printSheet").innerHTML =
-    slipHtml({ user_name: pr.name, period: pr.month, hours, rate: pr.rate, bonus: pr.bonus, penalty: pr.penalty, total, note: pr.note }, shiftCount);
-  window.print();
+function bindShifts() {
+  $("btn-load-shifts").addEventListener("click", () => loadShifts().catch(e => toast(e.message, false)));
+  $("btn-add-shift").addEventListener("click", () => openShiftModal(null));
+  document.querySelectorAll("[data-edit]").forEach(b => b.addEventListener("click", () => openShiftModal(shifts.find(r => r.id == b.dataset.edit))));
+  document.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
+    if (!confirm("Xoá ca này?")) return;
+    try { await api(`/api/admin/attendance/${b.dataset.del}`, { method: "DELETE" }); toast("Đã xoá"); loadShifts(); }
+    catch (e) { toast(e.message, false); }
+  }));
+  document.querySelectorAll("[data-close]").forEach(b => b.addEventListener("click", async () => {
+    try { await api(`/api/admin/attendance/${b.dataset.close}`, { method: "PUT", body: JSON.stringify({ check_out_at: new Date().toISOString() }) }); toast("Đã tan ca"); loadShifts(); }
+    catch (e) { toast(e.message, false); }
+  }));
 }
-async function reprintPayroll(id) {
-  const p = S.payroll.find((x) => x.id === id);
+function openShiftModal(r) {
+  const staffUsers = users.filter(u => u.role !== "admin" || true);
+  $("modal-root").innerHTML = `
+  <div class="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-40">
+    <div class="bg-white rounded-2xl p-6 w-full max-w-sm">
+      <h3 class="font-bold text-slate-800 mb-4">${r ? "Sửa ca" : "Thêm ca thủ công"}</h3>
+      ${r ? "" : `<label class="text-xs text-slate-500">Nhân viên</label>
+        <select id="m-user" class="w-full border rounded-xl px-3 py-2 mb-3">
+          ${staffUsers.map(u=>`<option value="${u.id}">${esc(u.full_name || u.username)}</option>`).join("")}
+        </select>`}
+      <label class="text-xs text-slate-500">Giờ vào</label>
+      <input id="m-in" type="datetime-local" value="${r ? isoToLocalInput(r.check_in_at) : ""}" class="w-full border rounded-xl px-3 py-2 mb-3"/>
+      <label class="text-xs text-slate-500">Giờ ra (để trống = đang làm)</label>
+      <input id="m-out" type="datetime-local" value="${r ? isoToLocalInput(r.check_out_at) : ""}" class="w-full border rounded-xl px-3 py-2 mb-4"/>
+      <div class="flex gap-2">
+        <button id="m-cancel" class="flex-1 border rounded-xl py-2 text-sm">Huỷ</button>
+        <button id="m-save" class="flex-1 bg-slate-800 text-white rounded-xl py-2 text-sm font-semibold">Lưu</button>
+      </div>
+    </div>
+  </div>`;
+  $("m-cancel").addEventListener("click", () => $("modal-root").innerHTML = "");
+  $("m-save").addEventListener("click", async () => {
+    const ci = $("m-in").value, co = $("m-out").value;
+    if (!ci) return toast("Nhập giờ vào", false);
+    const body = {
+      check_in_at: new Date(ci).toISOString(),
+      check_out_at: co ? new Date(co).toISOString() : null,
+      note: "nhập tay",
+    };
+    try {
+      if (r) await api(`/api/admin/attendance/${r.id}`, { method: "PUT", body: JSON.stringify(body) });
+      else await api("/api/admin/attendance", { method: "POST", body: JSON.stringify({ ...body, user_id: +$("m-user").value }) });
+      $("modal-root").innerHTML = ""; toast("Đã lưu"); loadShifts();
+    } catch (e) { toast(e.message, false); }
+  });
+}
+
+// ---------- Tab Nhân viên ----------
+function staffHtml() {
+  return `
+  <div class="bg-white rounded-2xl shadow p-5">
+    <div class="flex justify-between items-center mb-4">
+      <h2 class="font-semibold text-slate-700">Tài khoản nhân viên</h2>
+      <button id="btn-add-user" class="bg-emerald-600 text-white rounded-xl px-4 py-2 text-sm font-semibold">+ Thêm</button>
+    </div>
+    <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead><tr class="text-left text-slate-400 border-b">
+        <th class="py-2">Tên</th><th>Username</th><th>Vai trò</th><th>PIN</th><th>Lương/giờ</th><th></th></tr></thead>
+      <tbody>${users.map(u => `
+        <tr class="border-b last:border-0">
+          <td class="py-2 font-medium">${esc(u.full_name || u.username)}</td>
+          <td>${esc(u.username)}</td>
+          <td>${esc(u.role)}</td>
+          <td>${u.has_pin ? "✓" : "—"}</td>
+          <td>${u.hourly_rate ? fmtMoney(u.hourly_rate) : "—"}</td>
+          <td class="text-right">
+            <button class="text-blue-600 text-xs mr-2" data-edit-user="${u.id}">Sửa</button>
+            <button class="text-red-500 text-xs" data-del-user="${u.id}">Xoá</button>
+          </td>
+        </tr>`).join("") || `<tr><td colspan="6" class="py-6 text-center text-slate-400">Chưa có nhân viên</td></tr>`}
+      </tbody>
+    </table></div>
+  </div>`;
+}
+function bindStaff() {
+  $("btn-add-user").addEventListener("click", () => openUserModal(null));
+  document.querySelectorAll("[data-edit-user]").forEach(b => b.addEventListener("click", () => openUserModal(users.find(u => u.id == b.dataset.editUser))));
+  document.querySelectorAll("[data-del-user]").forEach(b => b.addEventListener("click", async () => {
+    if (!confirm("Xoá tài khoản này?")) return;
+    try { await api(`/api/admin/users/${b.dataset.delUser}`, { method: "DELETE" }); toast("Đã xoá"); loadUsers(); }
+    catch (e) { toast(e.message, false); }
+  }));
+}
+function openUserModal(u) {
+  $("modal-root").innerHTML = `
+  <div class="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-40">
+    <div class="bg-white rounded-2xl p-6 w-full max-w-sm">
+      <h3 class="font-bold text-slate-800 mb-4">${u ? "Sửa tài khoản" : "Thêm tài khoản"}</h3>
+      <input id="u-name" class="w-full border rounded-xl px-3 py-2 mb-2" placeholder="Họ tên" value="${esc(u?.full_name || "")}"/>
+      <input id="u-username" class="w-full border rounded-xl px-3 py-2 mb-2" placeholder="Username đăng nhập" value="${esc(u?.username || "")}" ${u ? "disabled" : ""}/>
+      <input id="u-pass" type="password" class="w-full border rounded-xl px-3 py-2 mb-2" placeholder="${u ? "Đổi mật khẩu (để trống = giữ)" : "Mật khẩu"}"/>
+      <select id="u-role" class="w-full border rounded-xl px-3 py-2 mb-2">
+        ${["staff","kitchen","admin"].map(r=>`<option value="${r}" ${u?.role===r?"selected":""}>${r}</option>`).join("")}
+      </select>
+      <input id="u-pin" class="w-full border rounded-xl px-3 py-2 mb-2" placeholder="${u ? "PIN mới (để trống = giữ)" : "PIN chấm công 4-6 số (tuỳ chọn)"}"/>
+      <input id="u-rate" type="number" class="w-full border rounded-xl px-3 py-2 mb-4" placeholder="Lương theo giờ (đ)" value="${u?.hourly_rate || ""}"/>
+      <div class="flex gap-2">
+        <button id="u-cancel" class="flex-1 border rounded-xl py-2 text-sm">Huỷ</button>
+        <button id="u-save" class="flex-1 bg-slate-800 text-white rounded-xl py-2 text-sm font-semibold">Lưu</button>
+      </div>
+    </div>
+  </div>`;
+  $("u-cancel").addEventListener("click", () => $("modal-root").innerHTML = "");
+  $("u-save").addEventListener("click", async () => {
+    const body = {
+      full_name: $("u-name").value.trim(),
+      role: $("u-role").value,
+      hourly_rate: +$("u-rate").value || 0,
+    };
+    if ($("u-pin").value.trim()) body.pin = $("u-pin").value.trim();
+    if ($("u-pass").value) body.password = $("u-pass").value;
+    try {
+      if (u) await api(`/api/admin/users/${u.id}`, { method: "PUT", body: JSON.stringify(body) });
+      else {
+        if (!$("u-username").value.trim() || !$("u-pass").value) return toast("Cần username + mật khẩu", false);
+        await api("/api/admin/users", { method: "POST", body: JSON.stringify({ ...body, username: $("u-username").value.trim() }) });
+      }
+      $("modal-root").innerHTML = ""; toast("Đã lưu"); loadUsers();
+    } catch (e) { toast(e.message, false); }
+  });
+}
+
+// ---------- Tab Bảng công ----------
+function monthHtml() {
+  return `
+  <div class="bg-white rounded-2xl shadow p-5">
+    <div class="flex gap-2 items-end mb-4">
+      <div><label class="text-xs text-slate-500">Tháng</label>
+        <input id="m-period" type="month" value="${monthNow()}" class="border rounded-xl px-3 py-2"/></div>
+      <button id="btn-load-month" class="bg-slate-800 text-white rounded-xl px-4 py-2 text-sm font-semibold">Xem</button>
+    </div>
+    <div id="month-body"></div>
+  </div>`;
+}
+function bindMonth() {
+  $("btn-load-month").addEventListener("click", loadMonth);
+  loadMonth();
+}
+async function loadMonth() {
+  const p = $("m-period").value; // YYYY-MM
   if (!p) return;
-  document.getElementById("printSheet").innerHTML = slipHtml(p, "—");
-  window.print();
+  try {
+    const rows = await api(`/api/admin/attendance?from=${p}-01&to=${p}-31`);
+    const byUser = {};
+    for (const r of rows) {
+      const k = r.name || "?";
+      if (!byUser[k]) byUser[k] = { days: new Set(), shifts: 0, hours: 0 };
+      byUser[k].shifts++;
+      byUser[k].hours += hoursOf(r);
+      if (r.check_in_at) byUser[k].days.add(r.check_in_at.slice(0,10));
+    }
+    $("month-body").innerHTML = `
+    <table class="w-full text-sm">
+      <thead><tr class="text-left text-slate-400 border-b"><th class="py-2">Nhân viên</th><th>Số ngày</th><th>Số ca</th><th>Tổng giờ</th></tr></thead>
+      <tbody>${Object.entries(byUser).map(([n,v])=>`
+        <tr class="border-b last:border-0">
+          <td class="py-2 font-medium">${esc(n)}</td><td>${v.days.size}</td><td>${v.shifts}</td><td>${v.hours.toFixed(1)}h</td>
+        </tr>`).join("") || `<tr><td colspan="4" class="py-6 text-center text-slate-400">Không có ca nào trong tháng</td></tr>`}
+      </tbody>
+    </table>`;
+  } catch (e) { toast(e.message, false); }
 }
 
-// ================= Boot =================
-if (S.token) {
-  api("/api/login", "POST", {}).then((r) => {
-    if (r.success) loadDbs(); else { S.token = ""; sessionStorage.removeItem("cf_token"); renderLogin(); }
-  }).catch(() => renderLogin());
-} else {
-  renderLogin();
+// ---------- Tab Phiếu lương ----------
+function payrollHtml() {
+  return `
+  <div class="grid md:grid-cols-2 gap-4">
+    <div class="bg-white rounded-2xl shadow p-5">
+      <h2 class="font-semibold text-slate-700 mb-4">Tạo phiếu lương</h2>
+      <label class="text-xs text-slate-500">Nhân viên</label>
+      <select id="p-user" class="w-full border rounded-xl px-3 py-2 mb-2">
+        ${users.map(u=>`<option value="${u.id}">${esc(u.full_name || u.username)}</option>`).join("")}
+      </select>
+      <label class="text-xs text-slate-500">Kỳ lương</label>
+      <input id="p-period" type="month" value="${monthNow()}" class="w-full border rounded-xl px-3 py-2 mb-2"/>
+      <div class="grid grid-cols-2 gap-2">
+        <div><label class="text-xs text-slate-500">Tổng giờ</label>
+          <input id="p-hours" type="number" step="0.1" class="w-full border rounded-xl px-3 py-2 mb-2" placeholder="0"/></div>
+        <div><label class="text-xs text-slate-500">Lương/giờ (đ)</label>
+          <input id="p-rate" type="number" class="w-full border rounded-xl px-3 py-2 mb-2" placeholder="25000"/></div>
+        <div><label class="text-xs text-slate-500">Thưởng (đ)</label>
+          <input id="p-bonus" type="number" class="w-full border rounded-xl px-3 py-2 mb-2" value="0"/></div>
+        <div><label class="text-xs text-slate-500">Phạt (đ)</label>
+          <input id="p-penalty" type="number" class="w-full border rounded-xl px-3 py-2 mb-2" value="0"/></div>
+      </div>
+      <input id="p-note" class="w-full border rounded-xl px-3 py-2 mb-3" placeholder="Ghi chú (tuỳ chọn)"/>
+      <div class="flex gap-2">
+        <button id="btn-calc" class="flex-1 border rounded-xl py-2 text-sm">Tính giờ từ chấm công</button>
+        <button id="btn-preview" class="flex-1 bg-slate-800 text-white rounded-xl py-2 text-sm font-semibold">Xem phiếu</button>
+      </div>
+    </div>
+    <div class="bg-white rounded-2xl shadow p-5">
+      <h2 class="font-semibold text-slate-700 mb-4">Phiếu đã tạo</h2>
+      <div id="payroll-list" class="text-sm"></div>
+    </div>
+  </div>
+  <div id="slip-wrap" class="mt-4"></div>`;
 }
+function bindPayroll() {
+  $("p-user").addEventListener("change", prefillRate);
+  $("btn-calc").addEventListener("click", calcHours);
+  $("btn-preview").addEventListener("click", previewSlip);
+  prefillRate(); loadPayrolls();
+}
+function prefillRate() {
+  const u = users.find(x => x.id == $("p-user")?.value);
+  if (u?.hourly_rate && $("p-rate")) $("p-rate").value = u.hourly_rate;
+}
+async function calcHours() {
+  const p = $("p-period").value; if (!p) return toast("Chọn kỳ", false);
+  const u = users.find(x => x.id == $("p-user").value);
+  try {
+    const rows = await api(`/api/admin/attendance?from=${p}-01&to=${p}-31`);
+    const h = rows.filter(r => r.user_id === u?.id || r.name === (u?.full_name || u?.username))
+      .reduce((a,r) => a + hoursOf(r), 0);
+    $("p-hours").value = h.toFixed(1);
+    toast(`Tổng ${h.toFixed(1)}h trong kỳ ${p}`);
+  } catch (e) { toast(e.message, false); }
+}
+function slipData() {
+  const u = users.find(x => x.id == $("p-user").value);
+  const name = u?.full_name || u?.username || "?";
+  const hours = +$("p-hours").value || 0, rate = +$("p-rate").value || 0;
+  const bonus = +$("p-bonus").value || 0, penalty = +$("p-penalty").value || 0;
+  return { user_name: name, period: $("p-period").value, hours, rate, bonus, penalty,
+           total: Math.round(hours * rate + bonus - penalty), note: $("p-note").value.trim() };
+}
+function previewSlip() {
+  const d = slipData();
+  if (!d.user_name || !d.period) return toast("Chọn nhân viên + kỳ", false);
+  $("slip-wrap").innerHTML = `
+  <div class="bg-white rounded-2xl shadow p-6 max-w-md mx-auto" id="slip-preview">
+    <h3 class="text-center font-bold text-lg text-slate-800">PHIẾU LƯƠNG — ${esc(d.period)}</h3>
+    <p class="text-center text-xs text-slate-400 mb-4">${esc(S().name)}</p>
+    <table class="w-full text-sm">
+      <tr class="border-b"><td class="py-2 text-slate-500">Nhân viên</td><td class="text-right font-medium">${esc(d.user_name)}</td></tr>
+      <tr class="border-b"><td class="py-2 text-slate-500">Tổng giờ làm</td><td class="text-right">${d.hours}h</td></tr>
+      <tr class="border-b"><td class="py-2 text-slate-500">Lương/giờ</td><td class="text-right">${fmtMoney(d.rate)}</td></tr>
+      <tr class="border-b"><td class="py-2 text-slate-500">Lương chính</td><td class="text-right">${fmtMoney(Math.round(d.hours * d.rate))}</td></tr>
+      <tr class="border-b"><td class="py-2 text-slate-500">Thưởng</td><td class="text-right text-emerald-600">+${fmtMoney(d.bonus)}</td></tr>
+      <tr class="border-b"><td class="py-2 text-slate-500">Phạt</td><td class="text-right text-red-600">-${fmtMoney(d.penalty)}</td></tr>
+      <tr><td class="py-3 font-bold">THỰC LĨNH</td><td class="text-right font-bold text-lg">${fmtMoney(d.total)}</td></tr>
+      ${d.note ? `<tr><td colspan="2" class="text-xs text-slate-400 pt-2">Ghi chú: ${esc(d.note)}</td></tr>` : ""}
+    </table>
+  </div>
+  <div class="flex gap-2 justify-center mt-3">
+    <button id="btn-save-slip" class="bg-emerald-600 text-white rounded-xl px-5 py-2 text-sm font-semibold">Lưu phiếu</button>
+    <button id="btn-print" class="bg-slate-800 text-white rounded-xl px-5 py-2 text-sm font-semibold">In / Xuất PDF</button>
+  </div>`;
+  $("btn-print").addEventListener("click", () => window.print());
+  $("btn-save-slip").addEventListener("click", async () => {
+    try { await api("/api/admin/payroll", { method: "POST", body: JSON.stringify(d) });
+      toast("Đã lưu phiếu"); loadPayrolls();
+    } catch (e) { toast(e.message, false); }
+  });
+}
+async function loadPayrolls() {
+  try {
+    payrolls = await api("/api/admin/payroll");
+    const el = $("payroll-list"); if (!el) return;
+    el.innerHTML = payrolls.map(p => `
+      <div class="flex items-center gap-2 py-2 border-b last:border-0">
+        <div class="flex-1"><span class="font-medium">${esc(p.user_name)}</span>
+          <span class="text-xs text-slate-400 ml-2">${esc(p.period)} — ${fmtMoney(p.total)}</span></div>
+        <button class="text-blue-600 text-xs" data-print-p="${p.id}">In</button>
+        <button class="text-red-500 text-xs" data-del-p="${p.id}">Xoá</button>
+      </div>`).join("") || `<p class="text-slate-400">Chưa có phiếu nào.</p>`;
+    el.querySelectorAll("[data-del-p]").forEach(b => b.addEventListener("click", async () => {
+      if (!confirm("Xoá phiếu này?")) return;
+      try { await api(`/api/admin/payroll/${b.dataset.delP}`, { method: "DELETE" }); loadPayrolls(); }
+      catch (e) { toast(e.message, false); }
+    }));
+    el.querySelectorAll("[data-print-p]").forEach(b => b.addEventListener("click", () => {
+      const p = payrolls.find(x => x.id == b.dataset.printP); if (!p) return;
+      $("p-hours").value = p.hours; $("p-rate").value = p.rate;
+      $("p-bonus").value = p.bonus; $("p-penalty").value = p.penalty;
+      $("p-note").value = p.note || "";
+      const u = users.find(x => (x.full_name || x.username) === p.user_name);
+      if (u) $("p-user").value = u.id;
+      $("p-period").value = p.period;
+      previewSlip();
+    }));
+  } catch (e) { /* bảng chưa có trên server cũ — bỏ qua */ }
+}
+
+render();
 </script>
 </body>
 </html>

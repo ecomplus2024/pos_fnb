@@ -83,6 +83,22 @@ async function migrate(db) {
     db.exec("ALTER TABLE users ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0");
     console.log("[db] +users.hidden");
   }
+  // users.hourly_rate — lương theo giờ, dùng cho phiếu lương
+  if (!userCols.includes("hourly_rate")) {
+    db.exec("ALTER TABLE users ADD COLUMN hourly_rate INTEGER NOT NULL DEFAULT 0");
+    console.log("[db] +users.hourly_rate");
+  }
+
+  // payroll — phiếu lương theo kỳ tạo từ trang quản trị
+  db.exec(`CREATE TABLE IF NOT EXISTS payroll (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_name TEXT NOT NULL,
+    period TEXT NOT NULL,
+    hours REAL, rate INTEGER, bonus INTEGER DEFAULT 0, penalty INTEGER DEFAULT 0,
+    total INTEGER, note TEXT,
+    synced_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
 
   // Chấm công: 1 row = 1 ca (check_in_at bắt đầu, check_out_at kết thúc)
   // synced_at: đánh dấu đã đẩy lên hub (giống orders)
