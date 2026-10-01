@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "kitchen-remind-2";
+const APP_BUILD = "kitchen-remind-3";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -982,8 +982,8 @@ function useSyncPolling() {
         (async () => {
           const data = await fetchKitchenOrdersData("kitchen").catch(() => null);
           if (cancelled || !data) return;
-          // Detect new orders for audio alert
-          const newIds = new Set(data.orders.map((o) => o.id));
+          // Detect món MỚI theo item id — khách gọi thêm vào bill cũ cũng báo
+          const newIds = new Set(data.orders.flatMap((o) => (o.items || []).map((it) => it.id)));
           for (const id of newIds) {
             if (!prevKitchenOrderIdsRef.current.has(id)) { newKitchenAlertRef.current = true; break; }
           }
@@ -995,7 +995,7 @@ function useSyncPolling() {
         (async () => {
           const data = await fetchKitchenOrdersData("counter").catch(() => null);
           if (cancelled || !data) return;
-          const newIds = new Set(data.orders.map((o) => o.id));
+          const newIds = new Set(data.orders.flatMap((o) => (o.items || []).map((it) => it.id)));
           for (const id of newIds) {
             if (!prevCounterOrderIdsRef.current.has(id)) { newCounterAlertRef.current = true; break; }
           }
@@ -3925,8 +3925,8 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
       const newOrders = Array.isArray(ordersData) ? ordersData : [];
       const events = Array.isArray(eventsData) ? eventsData : [];
 
-      // Play alert for new orders
-      const newIds = new Set(newOrders.map((o) => o.id));
+      // Play alert cho món MỚI theo item id — gọi thêm vào bill cũ cũng báo
+      const newIds = new Set(newOrders.flatMap((o) => (o.items || []).map((it) => it.id)));
       for (const id of newIds) {
         if (!previousOrderIdsRef.current.has(id)) {
           playAlertSound();
