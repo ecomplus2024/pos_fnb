@@ -15,19 +15,26 @@ async function login(base) {
   return d.access_token;
 }
 
-async function api(base, token, path, method = "GET", body) {
-  const res = await fetch(`${base}${path}`, {
-    method,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.text();
-  let d;
-  try { d = JSON.parse(text); } catch { d = text; }
-  return { status: res.status, data: d };
+async function api(base, token, path, method = "GET", body, retry = 4) {
+  for (let i = 0; i < retry; i++) {
+    try {
+      const res = await fetch(`${base}${path}`, {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const text = await res.text();
+      let d;
+      try { d = JSON.parse(text); } catch { d = text; }
+      return { status: res.status, data: d };
+    } catch (e) {
+      if (i === retry - 1) return { status: 0, data: String(e) };
+      await new Promise((s) => setTimeout(s, 2000 * (i + 1)));
+    }
+  }
 }
 
 // Tải ảnh từ POS cũ → upload sang POS mới, trả URL mới
@@ -40,7 +47,13 @@ async function migrateImage(imageUrl, oldToken, newToken, cache) {
   }
   if (cache.has(imageUrl)) return cache.get(imageUrl);
   const src = imageUrl.startsWith("http") ? imageUrl : `${OLD}${imageUrl}`;
-  const imgRes = await fetch(src);
+  let imgRes = null;
+  for (let i = 0; i < 4; i++) {
+    try { imgRes = await fetch(src); break; } catch (e) {
+      if (i === 3) { console.log(`  ! Không tải được ảnh ${src} (${e.message})`); cache.set(imageUrl, imageUrl); return imageUrl; }
+      await new Promise((s) => setTimeout(s, 2000 * (i + 1)));
+    }
+  }
   if (!imgRes.ok) { console.log(`  ! Không tải được ảnh ${src} (${imgRes.status})`); cache.set(imageUrl, imageUrl); return imageUrl; }
   const buf = Buffer.from(await imgRes.arrayBuffer());
   const { status, data } = await api(NEW, newToken, "/api/admin/upload", "POST", {
