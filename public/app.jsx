@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "kitchen-remind-1";
+const APP_BUILD = "kitchen-remind-2";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -3892,16 +3892,21 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
         audioContextRef.current.resume();
       }
       const ctx = audioContextRef.current;
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.frequency.value = 800;
-      osc.type = "square";
-      gain.gain.setValueAtTime(0.5, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
-      osc.start(ctx.currentTime);
-      osc.stop(ctx.currentTime + 0.5);
+      // Chuỗi 3 tiếng "bíp-bíp-bíp" — nghe rõ như chuông báo bếp thật
+      const t0 = ctx.currentTime;
+      for (let i = 0; i < 3; i++) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.value = i === 1 ? 1100 : 880;
+        osc.type = "square";
+        const s = t0 + i * 0.35;
+        gain.gain.setValueAtTime(0.5, s);
+        gain.gain.exponentialRampToValueAtTime(0.01, s + 0.25);
+        osc.start(s);
+        osc.stop(s + 0.25);
+      }
     } catch (e) {
       console.error("Audio error:", e);
     }
@@ -3987,8 +3992,8 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
     return () => { clearInterval(interval); es.close(); };
   }, [fetchOrders, isEmbedded]);
 
-  // Nhắc lại: món pending quá 30s chưa được bấm → kêu lại, lặp mỗi 15s
-  // cho tới khi bếp/quầy nhận món (status đổi khỏi 'pending').
+  // Báo động nhắc liên tục: món pending quá 30s chưa được bấm "đang làm"
+  // → kêu lặp mỗi 5s cho tới khi bếp/quầy nhận món (status đổi khỏi 'pending').
   useEffect(() => {
     const tick = () => {
       const now = Date.now();
@@ -3999,7 +4004,7 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
       }));
       if (overdue) playAlertSound();
     };
-    const iv = setInterval(tick, 15000);
+    const iv = setInterval(tick, 5000);
     return () => clearInterval(iv);
   }, [orders, playAlertSound]);
 
