@@ -123,7 +123,7 @@ const newTableNames = new Set(newTables.map((t) => t.name));
 let tOk = 0;
 for (const t of oldTables) {
   if (newTableNames.has(t.name)) continue;
-  const r = await api(NEW, nt, "/api/admin/tables", "POST", { name: t.name });
+  const r = await api(NEW, nt, "/api/admin/tables", "POST", { name: t.name, id: t.id });
   if (r.status === 201) tOk++;
   else console.log(`  ! Tạo bàn "${t.name}":`, JSON.stringify(r.data).slice(0, 100));
 }

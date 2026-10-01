@@ -167,7 +167,8 @@ for (const c of categories) {
 // 6. Tạo tables
 let tblOk = 0;
 for (const t of tables) {
-  const r = await api(NEW, newToken, "/api/admin/tables", "POST", { name: t.name });
+  // Giữ nguyên id từ POS nguồn — QR/đơn public gắn theo table_id
+  const r = await api(NEW, newToken, "/api/admin/tables", "POST", { name: t.name, id: t.id });
   if (r.status === 201) tblOk++;
   else console.log(`  ! Tạo bàn "${t.name}": ${JSON.stringify(r.data).slice(0, 120)}`);
 }

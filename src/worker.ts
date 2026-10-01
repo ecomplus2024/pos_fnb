@@ -2707,9 +2707,19 @@ async function handleAdminAddTable(env, body) {
   if (!body.name) return json({ message: "name l\xE0 b\u1EAFt bu\u1ED9c" }, 400);
   const existing = await env.DB.prepare("SELECT id FROM tables WHERE name = ?").bind(body.name).first();
   if (existing) return json({ message: "Table name already exists" }, 400);
-  const result = await env.DB.prepare(
-    "INSERT INTO tables (name, status) VALUES (?, 'empty') RETURNING id"
-  ).bind(body.name).first();
+  // Cho phép chỉ định id — dùng khi sync catalog để id trùng số bàn / QR cũ
+  let result;
+  if (body.id) {
+    const idTaken = await env.DB.prepare("SELECT id FROM tables WHERE id = ?").bind(Number(body.id)).first();
+    if (idTaken) return json({ message: "Table id already exists" }, 400);
+    result = await env.DB.prepare(
+      "INSERT INTO tables (id, name, status) VALUES (?, ?, 'empty') RETURNING id"
+    ).bind(Number(body.id), body.name).first();
+  } else {
+    result = await env.DB.prepare(
+      "INSERT INTO tables (name, status) VALUES (?, 'empty') RETURNING id"
+    ).bind(body.name).first();
+  }
   if (!result) return json({ message: "Kh\xF4ng t\u1EA1o \u0111\u01B0\u1EE3c b\xE0n" }, 500);
   await invalidateMenuCaches(env);
   return json({ message: "Table added", id: result.id }, 201);
@@ -2730,7 +2740,21 @@ async function handleAdminUpdateDeleteTable(env, tableId, request) {
   }
   const name = body.name ?? table3.name;
   const status = body.status ?? table3.status;
-  await env.DB.prepare("UPDATE tables SET name = ?, status = ? WHERE id = ?").bind(name, status, tableId).run();
+  const newId = body.new_id ? parseInt(body.new_id, 10) : null;
+  if (newId && newId !== tableId) {
+    // Đổi id bàn (fix id lệch số bàn sau khi sync). orders/staff_calls có FK
+    // → tạo row mới với id đích, chuyển con sang, xóa row cũ.
+    const taken = await env.DB.prepare("SELECT id FROM tables WHERE id = ?").bind(newId).first();
+    if (taken) return json({ message: "new_id \u0111\xE3 t\u1ED3n t\u1EA1i" }, 400);
+    await env.DB.prepare(
+      "INSERT INTO tables (id, name, status, current_order_id) VALUES (?, ?, 'empty', NULL)"
+    ).bind(newId, name).run();
+    await env.DB.prepare("UPDATE orders SET table_id = ? WHERE table_id = ?").bind(newId, tableId).run();
+    await env.DB.prepare("UPDATE staff_calls SET table_id = ? WHERE table_id = ?").bind(newId, tableId).run();
+    await env.DB.prepare("DELETE FROM tables WHERE id = ?").bind(tableId).run();
+  } else {
+    await env.DB.prepare("UPDATE tables SET name = ?, status = ? WHERE id = ?").bind(name, status, tableId).run();
+  }
   await invalidateMenuCaches(env);
   return json({ message: "Table updated" });
 }
