@@ -8896,22 +8896,19 @@ function AttendanceAdminView() {
     }
   };
 
-  // In phiếu qua cửa sổ riêng — copy CSS đã build, tránh lỗi trang trùng của hack visibility
+  // In bằng cách clone phiếu vào #print-root (display:none) rồi window.print()
+  // — khi in ẩn #root, hiện #print-root. Giữ nguyên stylesheet, không cần popup.
   const printSlip = () => {
     const el = document.getElementById("pay-slip");
     if (!el) { window.print(); return; }
-    const w = window.open("", "_blank", "width=420,height=640");
-    if (!w) { window.print(); return; }
-    const styles = Array.from(document.querySelectorAll("style,link[rel=stylesheet]"))
-      .map((s) => s.outerHTML).join("");
-    w.document.write(
-      `<!doctype html><html><head><meta charset="utf-8">${styles}` +
-      `<style>body{margin:0;padding:16px}#pay-slip{border-radius:0}</style></head>` +
-      `<body>${el.outerHTML}</body></html>`
-    );
-    w.document.close();
-    w.focus();
-    setTimeout(() => { w.print(); w.close(); }, 350);
+    let pr = document.getElementById("print-root");
+    if (!pr) {
+      pr = document.createElement("div");
+      pr.id = "print-root";
+      document.body.appendChild(pr);
+    }
+    pr.innerHTML = el.outerHTML;
+    window.print();
   };
 
   const delSlip = async (id) => {
@@ -9487,7 +9484,7 @@ function AttendanceAdminView() {
           </div>
         </div>
       )}
-      <style>{`@media print { body * { visibility: hidden; } #pay-slip, #pay-slip * { visibility: visible; } #pay-slip { position: absolute; left: 0; top: 0; width: 100%; height: auto; } body { height: auto !important; } }`}</style>
+      <style>{`#print-root { display: none; } @media print { body > #root { display: none !important; } #print-root { display: block !important; padding: 12px; } #print-root #pay-slip { border-radius: 0; box-shadow: none; } }`}</style>
     </div>
   );
 }

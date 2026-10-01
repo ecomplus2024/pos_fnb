@@ -6,8 +6,9 @@
 <title>Quản trị chấm công POS</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
-  @media print { body * { visibility:hidden } #slip-preview, #slip-preview * { visibility:visible }
-    #slip-preview { position:absolute; left:0; top:0; width:100%; height:auto } body { height:auto !important } }
+  #print-root { display:none }
+  @media print { body > #app { display:none !important } #print-root { display:block !important; padding:12px }
+    #print-root #slip-preview { border-radius:0; box-shadow:none } }
 </style>
 </head>
 <body class="min-h-screen bg-slate-100">
@@ -531,13 +532,11 @@ async function previewSlip() {
   </div>`;
   $("btn-print").addEventListener("click", () => {
     const el = document.getElementById("slip-preview");
-    const w = window.open("", "_blank", "width=420,height=640");
-    if (!el || !w) { window.print(); return; }
-    const styles = Array.from(document.querySelectorAll("style,link[rel=stylesheet]")).map((s) => s.outerHTML).join("");
-    w.document.write(`<!doctype html><html><head><meta charset="utf-8">${styles}<style>body{margin:0;padding:16px}</style></head><body>${el.outerHTML}</body></html>`);
-    w.document.close();
-    w.focus();
-    setTimeout(() => { w.print(); w.close(); }, 350);
+    if (!el) { window.print(); return; }
+    let pr = document.getElementById("print-root");
+    if (!pr) { pr = document.createElement("div"); pr.id = "print-root"; document.body.appendChild(pr); }
+    pr.innerHTML = el.outerHTML;
+    window.print();
   });
   $("btn-save-slip").addEventListener("click", async () => {
     try { await api("/api/admin/payroll", { method: "POST", body: JSON.stringify(d) });
