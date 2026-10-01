@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "kiosk-today-1";
+const APP_BUILD = "kitchen-remind-1";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -3986,6 +3986,22 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
     es.onmessage = () => fetchOrders();
     return () => { clearInterval(interval); es.close(); };
   }, [fetchOrders, isEmbedded]);
+
+  // Nhắc lại: món pending quá 30s chưa được bấm → kêu lại, lặp mỗi 15s
+  // cho tới khi bếp/quầy nhận món (status đổi khỏi 'pending').
+  useEffect(() => {
+    const tick = () => {
+      const now = Date.now();
+      const overdue = orders.some((o) => (o.items || []).some((it) => {
+        if (it.status !== "pending") return false;
+        const t = it.reported_at ? new Date(it.reported_at.replace(" ", "T") + "Z").getTime() : NaN;
+        return Number.isFinite(t) && now - t > 30000;
+      }));
+      if (overdue) playAlertSound();
+    };
+    const iv = setInterval(tick, 15000);
+    return () => clearInterval(iv);
+  }, [orders, playAlertSound]);
 
   const updateItemStatus = async (itemId, status) => {
     const key = `${itemId}:status`;
