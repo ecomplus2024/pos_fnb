@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "sound-dingdong-1";
+const APP_BUILD = "sound-dingdong-2";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -890,25 +890,26 @@ const playBeep = () => {
   } catch {}
   playBeepOsc();
 };
-// Fallback: oscillator khi file âm thanh không phát được
+// Fallback: oscillator sine "ding-dong" êm khi file âm thanh không phát được
 const playBeepOsc = () => {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     const t0 = ctx.currentTime;
-    for (let i = 0; i < 3; i++) {
+    [[1046.5, 0.55], [784, 0.85]].forEach(([f, dur], i) => {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.connect(gain);
       gain.connect(ctx.destination);
-      osc.frequency.value = i === 1 ? 1100 : 880;
-      osc.type = "square";
-      const s = t0 + i * 0.35;
-      gain.gain.setValueAtTime(1.0, s);
-      gain.gain.exponentialRampToValueAtTime(0.01, s + 0.3);
+      osc.frequency.value = f;
+      osc.type = "sine";
+      const s = t0 + i * 0.65;
+      gain.gain.setValueAtTime(0.001, s);
+      gain.gain.exponentialRampToValueAtTime(0.9, s + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.01, s + dur);
       osc.start(s);
-      osc.stop(s + 0.3);
-    }
-    setTimeout(() => ctx.close(), 1500);
+      osc.stop(s + dur);
+    });
+    setTimeout(() => ctx.close(), 2000);
   } catch {}
 };
 
@@ -974,8 +975,8 @@ function useSyncPolling() {
   // Notification refs (PosApp reads these to play beep/toast)
   const staffCallsRef = useRef([]);
   const newStaffCallsRef = useRef([]);
-  const prevKitchenOrderIdsRef = useRef(new Set());
-  const prevCounterOrderIdsRef = useRef(new Set());
+  const prevKitchenOrderIdsRef = useRef(null); // null = chưa tải lần đầu → không báo lúc khởi động
+  const prevCounterOrderIdsRef = useRef(null);
   const newKitchenAlertRef = useRef(false);
   const newCounterAlertRef = useRef(false);
 
@@ -1015,8 +1016,10 @@ function useSyncPolling() {
           if (cancelled || !data) return;
           // Detect món MỚI theo item id — khách gọi thêm vào bill cũ cũng báo
           const newIds = new Set(data.orders.flatMap((o) => (o.items || []).map((it) => it.id)));
-          for (const id of newIds) {
-            if (!prevKitchenOrderIdsRef.current.has(id)) { newKitchenAlertRef.current = true; break; }
+          if (prevKitchenOrderIdsRef.current !== null) {
+            for (const id of newIds) {
+              if (!prevKitchenOrderIdsRef.current.has(id)) { newKitchenAlertRef.current = true; break; }
+            }
           }
           prevKitchenOrderIdsRef.current = newIds;
           setKitchenOrders(data.orders);
@@ -1027,8 +1030,10 @@ function useSyncPolling() {
           const data = await fetchKitchenOrdersData("counter").catch(() => null);
           if (cancelled || !data) return;
           const newIds = new Set(data.orders.flatMap((o) => (o.items || []).map((it) => it.id)));
-          for (const id of newIds) {
-            if (!prevCounterOrderIdsRef.current.has(id)) { newCounterAlertRef.current = true; break; }
+          if (prevCounterOrderIdsRef.current !== null) {
+            for (const id of newIds) {
+              if (!prevCounterOrderIdsRef.current.has(id)) { newCounterAlertRef.current = true; break; }
+            }
           }
           prevCounterOrderIdsRef.current = newIds;
           setCounterOrders(data.orders);
@@ -3851,7 +3856,7 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
   const [soundEnabled, setSoundEnabled] = useState(true);
   const audioContextRef = useRef(null);
   const lastPlayTime = useRef(0);
-  const previousOrderIdsRef = useRef(new Set());
+  const previousOrderIdsRef = useRef(null); // null = chưa tải lần đầu → không báo lúc mở màn
   // Theo dõi optimistic status: itemId → {status, qty, at} — giữ cho tới khi server confirm
   const pendingStatusRef = useRef(new Map());
   const mutationCounter = useRef(0);
@@ -3953,10 +3958,12 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
 
       // Play alert cho món MỚI theo item id — gọi thêm vào bill cũ cũng báo
       const newIds = new Set(newOrders.flatMap((o) => (o.items || []).map((it) => it.id)));
-      for (const id of newIds) {
-        if (!previousOrderIdsRef.current.has(id)) {
-          playAlertSound();
-          break;
+      if (previousOrderIdsRef.current !== null) {
+        for (const id of newIds) {
+          if (!previousOrderIdsRef.current.has(id)) {
+            playAlertSound();
+            break;
+          }
         }
       }
       previousOrderIdsRef.current = newIds;
