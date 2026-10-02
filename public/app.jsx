@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "sound-upload-1";
+const APP_BUILD = "sound-bell-1";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -868,7 +868,7 @@ async function authFetch(path, options = {}) {
 // Batch 3: WebAudio beep function for kitchen/counter alerts
 // File chuông báo phát qua <audio> (media stream — to theo volume máy),
 // fallback oscillator nếu file lỗi.
-const ALERT_SOUND_URL = "/sounds/kitchen-alert.wav";
+const ALERT_SOUND_URL = "/sounds/opening-bell.mp3";
 let _alertAudio = null;
 const playBeep = () => {
   try {
