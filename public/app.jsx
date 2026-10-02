@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "kitchen-remind-5";
+const APP_BUILD = "kitchen-remind-6";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -872,11 +872,17 @@ const ALERT_SOUND_URL = "/sounds/kitchen-alert.wav";
 let _alertAudio = null;
 const playBeep = () => {
   try {
-    if (!_alertAudio) {
-      _alertAudio = new Audio(ALERT_SOUND_URL);
+    // Chuông tùy chỉnh + volume — tương thích config của POS cũ (localStorage)
+    const custom = localStorage.getItem("kitchen_alert_sound");
+    const vol = Math.max(0, Math.min(1, parseFloat(localStorage.getItem("kitchen_alert_volume") || "1")));
+    const src = custom || ALERT_SOUND_URL;
+    if (!_alertAudio || _alertAudio._src !== src) {
+      _alertAudio = new Audio(src);
+      _alertAudio._src = src;
       _alertAudio.preload = "auto";
       _alertAudio.onerror = () => { _alertAudio = null; };
     }
+    _alertAudio.volume = vol;
     _alertAudio.currentTime = 0;
     const p = _alertAudio.play();
     if (p && p.catch) p.catch(() => playBeepOsc());
