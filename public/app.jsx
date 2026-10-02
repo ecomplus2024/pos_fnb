@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "table-style-1";
+const APP_BUILD = "table-style-2";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -2131,7 +2131,7 @@ function PosApp({ user, onLogout }) {
               <div className="mb-3">
                 <div className="flex items-center justify-between gap-3 mb-2">
                   <div>
-                    <button onClick={() => { setShowTablePicker(true); }}
+                    <button onClick={() => setView("tables")}
                       className="text-sm text-gray-500 hover:text-gray-900 mb-1 flex items-center gap-1"><Icon name="arrow-left" className="w-4 h-4" /> Quay lại</button>
                     <h2 className="text-xl font-bold">{selectedTable ? `Bàn: ${selectedTable.name}` : "Order nhanh"}</h2>
                   </div>
