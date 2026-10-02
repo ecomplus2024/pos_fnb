@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "kitchen-remind-4";
+const APP_BUILD = "kitchen-remind-5";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -866,11 +866,29 @@ async function authFetch(path, options = {}) {
 }
 
 // Batch 3: WebAudio beep function for kitchen/counter alerts
+// File chuông báo phát qua <audio> (media stream — to theo volume máy),
+// fallback oscillator nếu file lỗi.
+const ALERT_SOUND_URL = "/sounds/kitchen-alert.wav";
+let _alertAudio = null;
 const playBeep = () => {
+  try {
+    if (!_alertAudio) {
+      _alertAudio = new Audio(ALERT_SOUND_URL);
+      _alertAudio.preload = "auto";
+      _alertAudio.onerror = () => { _alertAudio = null; };
+    }
+    _alertAudio.currentTime = 0;
+    const p = _alertAudio.play();
+    if (p && p.catch) p.catch(() => playBeepOsc());
+    return;
+  } catch {}
+  playBeepOsc();
+};
+// Fallback: oscillator khi file âm thanh không phát được
+const playBeepOsc = () => {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     const t0 = ctx.currentTime;
-    // 3 tiếng square to, rõ — dùng chung cho cảnh báo món mới/gọi nhân viên
     for (let i = 0; i < 3; i++) {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
@@ -879,7 +897,7 @@ const playBeep = () => {
       osc.frequency.value = i === 1 ? 1100 : 880;
       osc.type = "square";
       const s = t0 + i * 0.35;
-      gain.gain.setValueAtTime(0.9, s);
+      gain.gain.setValueAtTime(1.0, s);
       gain.gain.exponentialRampToValueAtTime(0.01, s + 0.3);
       osc.start(s);
       osc.stop(s + 0.3);
@@ -3891,32 +3909,8 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
     const now = Date.now();
     if (now - lastPlayTime.current < 1000) return;
     lastPlayTime.current = now;
-    try {
-      if (!audioContextRef.current) {
-        audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
-      }
-      if (audioContextRef.current.state === "suspended") {
-        audioContextRef.current.resume();
-      }
-      const ctx = audioContextRef.current;
-      // Chuỗi 3 tiếng "bíp-bíp-bíp" — nghe rõ như chuông báo bếp thật
-      const t0 = ctx.currentTime;
-      for (let i = 0; i < 3; i++) {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.frequency.value = i === 1 ? 1100 : 880;
-        osc.type = "square";
-        const s = t0 + i * 0.35;
-        gain.gain.setValueAtTime(0.9, s);
-        gain.gain.exponentialRampToValueAtTime(0.01, s + 0.3);
-        osc.start(s);
-        osc.stop(s + 0.3);
-      }
-    } catch (e) {
-      console.error("Audio error:", e);
-    }
+    // File WAV phát qua <audio> media stream — to theo volume máy, fallback oscillator
+    playBeep();
   }, [soundEnabled]);
 
   const fetchOrders = useCallback(async () => {
