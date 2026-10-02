@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "kitchen-remind-6";
+const APP_BUILD = "table-style-1";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -1900,7 +1900,7 @@ function PosApp({ user, onLogout }) {
                 )}
               </div>
               {tableFilterTab === "tables" && (
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+              <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 md:gap-4">
                 <button onClick={() => {
                     if (cart.length > 0) {
                       setShowTablePicker(true);
@@ -1912,13 +1912,15 @@ function PosApp({ user, onLogout }) {
                       setView("menu");
                     }
                   }}
-                  className="bg-orange-50 border-2 border-orange-300 rounded-2xl p-5 text-left hover:border-orange-500 transition relative">
-                  <div className="absolute top-3 right-3 w-3 h-3 rounded-full bg-orange-500"></div>
-                  <div className="font-black text-orange-600 text-base mb-3">ORDER NHANH</div>
-                  <div className="w-12 h-12 rounded-xl bg-orange-100 flex items-center justify-center mb-3">
-                    <Icon name="shopping-cart" className="w-6 h-6 text-orange-600" />
+                  className="relative p-3 md:p-6 rounded-2xl md:rounded-[2rem] border-2 transition-all duration-300 group bg-gradient-to-br from-orange-50 to-amber-50 border-orange-200 hover:border-orange-400 hover:shadow-md text-center">
+                  <div className="absolute top-4 right-4 w-3 h-3 rounded-full bg-orange-400"></div>
+                  <div className="text-sm md:text-xl font-black mb-2 md:mb-4 text-orange-700">ORDER NHANH</div>
+                  <div className="flex flex-col items-center space-y-1 md:space-y-2">
+                    <div className="bg-orange-100 p-2 md:p-4 rounded-xl md:rounded-2xl">
+                      <Icon name="shopping-cart" className="w-5 h-5 md:w-6 md:h-6 text-orange-600" />
+                    </div>
+                    <div className="text-[8px] md:text-[10px] font-bold text-orange-500 uppercase tracking-widest">Mang về / Tại quầy</div>
                   </div>
-                  <div className="text-xs text-orange-600 font-semibold tracking-wider">MANG VỀ / TẠI QUẦY</div>
                 </button>
                 {tables.map((t) => {
                   const occupied = t.status === "occupied";
@@ -1932,24 +1934,41 @@ function PosApp({ user, onLogout }) {
                   return (
                     <button key={t.id}
                       onClick={() => handleTableClick(t)}
-                      className={`bg-white border-2 rounded-2xl p-5 text-left transition relative ${
-                        isSelected ? "border-red-500 shadow-md" : occupied ? "border-red-200 hover:border-red-400" : "border-gray-200 hover:border-gray-400"
-                      }`}>
-                      <div className={`absolute top-3 right-3 w-3 h-3 rounded-full ${occupied ? "bg-red-400" : "bg-gray-300"}`}></div>
+                      className={`relative p-3 md:p-6 rounded-2xl md:rounded-[2rem] border-2 transition-all duration-300 group text-center ${
+                        occupied
+                          ? "bg-white border-red-400 shadow-[0_20px_40px_-15px_rgba(0,0,0,0.15)] -translate-y-1 scale-[1.02] ring-4 ring-red-50"
+                          : "bg-white border-gray-100 hover:border-gray-200 hover:shadow-md"
+                      } ${isSelected ? "!border-red-600" : ""}`}>
+                      <div className={`absolute top-3 right-3 md:top-4 md:right-4 w-3 h-3 rounded-full ${occupied ? "bg-red-500 animate-pulse" : "bg-gray-200"}`}></div>
                       {/* Nút lịch sử đơn */}
                       <div onClick={(e) => openTableHistory(e, t)}
-                        className="absolute bottom-3 right-3 w-8 h-8 rounded-lg bg-gray-100 hover:bg-blue-100 flex items-center justify-center transition cursor-pointer"
+                        className="absolute bottom-2 right-2 w-7 h-7 rounded-lg bg-gray-100 hover:bg-blue-100 flex items-center justify-center transition cursor-pointer"
                         title="Lịch sử đơn hàng">
-                        <Icon name="clock" className="w-4 h-4 text-gray-400 hover:text-blue-500" />
+                        <Icon name="clock" className="w-3.5 h-3.5 text-gray-400" />
                       </div>
-                      <div className={`font-black text-base mb-3 ${isSelected ? "text-red-600" : "text-blue-900"}`}>{t.name}</div>
+                      <div className={`text-sm md:text-xl font-black mb-2 md:mb-4 ${occupied ? "text-red-600" : "text-blue-900"}`}>{t.name}</div>
                       {occupied && t.pending_order ? (
-                        <div className="space-y-1">
-                          <div className="text-xs font-bold px-2 py-0.5 bg-red-100 text-red-600 rounded inline-block">{formatVND(t.pending_order.total)}</div>
-                          <div className="text-xs text-gray-500 flex items-center gap-1"><Icon name="clock" className="w-3 h-3" /><span>DÙNG {timerStr ? timerStr.toUpperCase() : "0PH"}</span></div>
+                        <div className="flex flex-col items-center space-y-1 md:space-y-2">
+                          <div className="bg-red-50 px-2 md:px-4 py-1 md:py-2 rounded-xl md:rounded-2xl">
+                            <span className="text-red-700 font-black text-[10px] md:text-base whitespace-nowrap">{formatVND(t.pending_order.total)}</span>
+                          </div>
+                          <div className="flex items-center gap-1 text-gray-400 font-bold text-[8px] md:text-[10px] uppercase tracking-widest">
+                            <Icon name="clock" className="w-2.5 h-2.5" />
+                            <span className="whitespace-nowrap">Dùng {timerStr}</span>
+                          </div>
+                          {/* Chấm vị trí A/B/C/D */}
+                          <div className="flex space-x-1 mt-1">
+                            {["A", "B", "C", "D"].map((p) => (
+                              <div key={p}
+                                className={`w-1.5 h-1.5 rounded-full ${t.positions?.some((x) => x.position === p && x.status === "occupied") ? "bg-red-500" : "bg-gray-100"}`}
+                                title={`Vị trí ${p}`}></div>
+                            ))}
+                          </div>
                         </div>
                       ) : (
-                        <div className="text-xs text-gray-400">{occupied ? "Đang phục vụ" : "Bàn trống"}</div>
+                        <div className="h-8 md:h-14 flex items-center justify-center">
+                          <div className="w-1.5 h-1.5 md:w-2 md:h-2 rounded-full bg-gray-100 group-hover:bg-red-200 transition-colors"></div>
+                        </div>
                       )}
                     </button>
                   );
