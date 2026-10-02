@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "sound-dingdong-2";
+const APP_BUILD = "sound-oldpos-1";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -890,26 +890,21 @@ const playBeep = () => {
   } catch {}
   playBeepOsc();
 };
-// Fallback: oscillator sine "ding-dong" êm khi file âm thanh không phát được
+// Fallback: oscillator — y hệt POS cũ: square 800Hz, 1 tiếng dài 0.8s
 const playBeepOsc = () => {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const t0 = ctx.currentTime;
-    [[1046.5, 0.55], [784, 0.85]].forEach(([f, dur], i) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.frequency.value = f;
-      osc.type = "sine";
-      const s = t0 + i * 0.65;
-      gain.gain.setValueAtTime(0.001, s);
-      gain.gain.exponentialRampToValueAtTime(0.9, s + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.01, s + dur);
-      osc.start(s);
-      osc.stop(s + dur);
-    });
-    setTimeout(() => ctx.close(), 2000);
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.value = 800;
+    osc.type = "square";
+    gain.gain.setValueAtTime(0.9, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.8);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.8);
+    setTimeout(() => ctx.close(), 1200);
   } catch {}
 };
 
@@ -4037,7 +4032,7 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
       }));
       if (overdue) playAlertSound();
     };
-    const iv = setInterval(tick, 5000);
+    const iv = setInterval(tick, 1500); // lặp liên tục như POS cũ
     return () => clearInterval(iv);
   }, [orders, playAlertSound]);
 
