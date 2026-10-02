@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "kitchen-remind-3";
+const APP_BUILD = "kitchen-remind-4";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -869,15 +869,22 @@ async function authFetch(path, options = {}) {
 const playBeep = () => {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.frequency.value = 880;
-    osc.type = "sine";
-    gain.gain.value = 0.3;
-    osc.start();
-    osc.stop(ctx.currentTime + 0.2);
+    const t0 = ctx.currentTime;
+    // 3 tiếng square to, rõ — dùng chung cho cảnh báo món mới/gọi nhân viên
+    for (let i = 0; i < 3; i++) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.value = i === 1 ? 1100 : 880;
+      osc.type = "square";
+      const s = t0 + i * 0.35;
+      gain.gain.setValueAtTime(0.9, s);
+      gain.gain.exponentialRampToValueAtTime(0.01, s + 0.3);
+      osc.start(s);
+      osc.stop(s + 0.3);
+    }
+    setTimeout(() => ctx.close(), 1500);
   } catch {}
 };
 
@@ -3902,10 +3909,10 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
         osc.frequency.value = i === 1 ? 1100 : 880;
         osc.type = "square";
         const s = t0 + i * 0.35;
-        gain.gain.setValueAtTime(0.5, s);
-        gain.gain.exponentialRampToValueAtTime(0.01, s + 0.25);
+        gain.gain.setValueAtTime(0.9, s);
+        gain.gain.exponentialRampToValueAtTime(0.01, s + 0.3);
         osc.start(s);
-        osc.stop(s + 0.25);
+        osc.stop(s + 0.3);
       }
     } catch (e) {
       console.error("Audio error:", e);
