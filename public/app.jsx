@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "sound-oldpos-1";
+const APP_BUILD = "sound-upload-1";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -3849,6 +3849,8 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
   const [activeTab, setActiveTab] = useState("pending");
   const [itemActionLoading, setItemActionLoading] = useState({});
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [showSoundCfg, setShowSoundCfg] = useState(false);
+  const [soundVer, setSoundVer] = useState(0); // bump để re-render khi đổi chuông
   const audioContextRef = useRef(null);
   const lastPlayTime = useRef(0);
   const previousOrderIdsRef = useRef(null); // null = chưa tải lần đầu → không báo lúc mở màn
@@ -4301,11 +4303,60 @@ function KitchenView({ unit, onLogout, fill = "screen" }) {
           >
             <Icon name={soundEnabled ? "volume-2" : "volume-x"} className="w-4 h-4" />
           </button>
+          <button onClick={() => setShowSoundCfg(true)} title="Cài đặt âm báo"
+            className="p-1.5 rounded-lg bg-gray-700/50 text-gray-400 hover:text-white">
+            <Icon name="settings" className="w-4 h-4" />
+          </button>
           <button onClick={onLogout} className="p-1.5 rounded-lg bg-gray-700/50 text-gray-400 hover:text-white">
             <Icon name="log-out" className="w-4 h-4" />
           </button>
         </div>
       </header>
+
+      {/* Cài đặt âm báo: upload file chuông + volume (giống POS cũ) */}
+      {showSoundCfg && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setShowSoundCfg(false)}>
+          <div className="bg-gray-800 rounded-2xl p-5 w-full max-w-xs space-y-4 border border-gray-700" onClick={(e) => e.stopPropagation()}>
+            <div className="font-bold text-white text-sm">Âm báo món mới</div>
+            <div>
+              <div className="text-xs text-gray-400 mb-1">Âm lượng</div>
+              <input type="range" min={10} max={100}
+                defaultValue={Math.round(parseFloat(localStorage.getItem("kitchen_alert_volume") || "1") * 100)}
+                onChange={(e) => localStorage.setItem("kitchen_alert_volume", (e.target.value / 100).toString())}
+                className="w-full accent-orange-500" />
+            </div>
+            <label className="block w-full text-center px-3 py-2.5 bg-orange-600 text-white rounded-xl text-sm font-bold cursor-pointer hover:bg-orange-500">
+              {localStorage.getItem("kitchen_alert_sound") ? "Đổi file chuông" : "Chọn file chuông (.wav/.mp3)"}
+              <input type="file" accept="audio/*,.wav,.mp3,.ogg,.m4a" className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  if (f.size > 3 * 1024 * 1024) { alert("File quá lớn — chọn file < 3MB"); return; }
+                  const rd = new FileReader();
+                  rd.onload = () => {
+                    try {
+                      localStorage.setItem("kitchen_alert_sound", rd.result);
+                      setSoundVer((v) => v + 1);
+                    } catch { alert("Không lưu được file — bộ nhớ đầy"); }
+                  };
+                  rd.readAsDataURL(f);
+                }} />
+            </label>
+            {localStorage.getItem("kitchen_alert_sound") && (
+              <button onClick={() => { localStorage.removeItem("kitchen_alert_sound"); setSoundVer((v) => v + 1); }}
+                className="w-full px-3 py-2 bg-gray-700 text-gray-300 rounded-xl text-xs font-bold">
+                Xóa chuông tùy chỉnh (về mặc định)
+              </button>
+            )}
+            <div className="flex gap-2">
+              <button onClick={() => playBeep()}
+                className="flex-1 px-3 py-2 bg-blue-600 text-white rounded-xl text-sm font-bold">Nghe thử</button>
+              <button onClick={() => setShowSoundCfg(false)}
+                className="flex-1 px-3 py-2 bg-gray-700 text-white rounded-xl text-sm font-bold">Đóng</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Desktop: 2-column layout */}
       <div className="hidden md:flex flex-1 p-3 gap-3 overflow-hidden">
