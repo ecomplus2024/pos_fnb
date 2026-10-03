@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "quick-order-1";
+const APP_BUILD = "mobile-edit-1";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -2297,7 +2297,8 @@ function PosApp({ user, onLogout }) {
                   <div className="py-8 text-center text-gray-400 text-sm">Chưa có món nào</div>
                 ) : cart.map((it, idx) => (
                   <div key={cartKey(it)} className="flex space-x-2 group relative">
-                    <div className="w-12 h-12 rounded-lg bg-gray-50 overflow-hidden flex-shrink-0 border border-gray-100">
+                    <div onClick={() => openToppingModal(idx)}
+                      className="w-12 h-12 rounded-lg bg-gray-50 overflow-hidden flex-shrink-0 border border-gray-100 cursor-pointer active:ring-2 active:ring-primary-300 transition-all">
                       {it.image_url ? <img src={it.image_url} alt="" className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-gray-300"><Icon name="utensils" className="w-6 h-6" /></div>}
                     </div>
                     <div className="flex-1 min-w-0">
@@ -2311,6 +2312,10 @@ function PosApp({ user, onLogout }) {
                       {(it.toppings && it.toppings.length > 0) && (
                         <p className="text-[9px] text-primary-500 font-medium italic truncate">+{it.toppings.map(t => t.name).join(", ")}</p>
                       )}
+                      {it.notes ? (
+                        <p onClick={() => openToppingModal(idx)}
+                          className="mt-0.5 px-1.5 py-0.5 bg-yellow-50 border border-yellow-100 rounded text-[9px] text-yellow-700 font-medium italic truncate cursor-pointer">{it.notes}</p>
+                      ) : null}
                       <div className="mt-1 flex items-center justify-between gap-1">
                         <div className="flex items-center bg-gray-100 rounded-md px-0.5">
                           <button onClick={(e) => { e.stopPropagation(); requestReduceQty(idx); }} className="w-7 h-7 flex items-center justify-center text-gray-500 font-bold text-sm">-</button>
@@ -2786,6 +2791,14 @@ function PosApp({ user, onLogout }) {
               <button onClick={() => { setShowToppingModal(false); setSelectedCartItemForTopping(null); }} className="p-2 hover:bg-gray-200 rounded-full text-2xl">×</button>
             </div>
             <div className="flex-1 overflow-y-auto p-5">
+              {/* Ghi chú món — giống EditItemModal của POS cũ */}
+              <div className="mb-4">
+                <div className="text-xs font-black text-gray-500 uppercase tracking-wider mb-1.5">Ghi chú</div>
+                <input type="text" placeholder="VD: ít đá, nhiều đường..."
+                  value={cart[selectedCartItemForTopping]?.notes || ""}
+                  onChange={(e) => updateNotes(selectedCartItemForTopping, e.target.value)}
+                  className="w-full px-3 py-2.5 bg-yellow-50 border border-yellow-200 rounded-xl text-sm font-medium text-gray-700 focus:outline-none focus:ring-2 focus:ring-yellow-400" />
+              </div>
               {(() => {
                 const currentItem = cart[selectedCartItemForTopping];
                 const allowedToppings = currentItem ? getAllowedToppingsForItem(currentItem) : [];
