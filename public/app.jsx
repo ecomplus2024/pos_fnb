@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "mobile-edit-1";
+const APP_BUILD = "table-tabs-1";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -1879,18 +1879,28 @@ function PosApp({ user, onLogout }) {
         <div className="flex-1 overflow-y-auto p-4 pb-20 md:p-6 md:pb-6">
           {view === "tables" && (
             <>
-              <div className="flex gap-1 mb-6 bg-gray-100 p-1 rounded-xl">
+              <div className="flex items-center gap-2 md:gap-3 mb-6">
                 <button onClick={() => setTableFilterTab("tables")}
-                  className={`px-5 py-2 rounded-full font-bold text-sm transition-all flex items-center gap-2 ${tableFilterTab === "tables" ? "bg-red-600 text-white shadow-sm" : "bg-white text-gray-700 hover:bg-gray-50"}`}>
+                  className={`px-4 py-2 rounded-xl font-bold text-sm transition-all flex items-center gap-2 ${tableFilterTab === "tables" ? "bg-primary-600 text-white shadow-lg" : "bg-white text-gray-600 hover:bg-gray-100 border"}`}>
                   <Icon name="layout-grid" className="w-4 h-4" /> Sơ đồ bàn
                 </button>
                 <button onClick={() => setTableFilterTab("takeaway")}
-                  className={`px-5 py-2 rounded-full font-bold text-sm transition-all flex items-center gap-2 ${tableFilterTab === "takeaway" ? "bg-orange-500 text-white shadow-sm" : "bg-white text-gray-700 hover:bg-gray-50"}`}>
+                  className={`relative px-4 py-2 rounded-xl font-bold text-sm transition-all flex items-center gap-2 ${tableFilterTab === "takeaway" ? "bg-orange-500 text-white shadow-lg" : "bg-white text-gray-600 hover:bg-gray-100 border"}`}>
                   <Icon name="shopping-bag" className="w-4 h-4" /> Mang về
+                  {orders.filter(o => o._kind === "takeaway" && o.status !== "completed" && o.status !== "paid").length > 0 && (
+                    <span className="absolute -top-2 -right-2 bg-red-500 text-white text-[10px] w-5 h-5 flex items-center justify-center rounded-full font-bold">
+                      {orders.filter(o => o._kind === "takeaway" && o.status !== "completed" && o.status !== "paid").length}
+                    </span>
+                  )}
                 </button>
                 <button onClick={() => setTableFilterTab("ship")}
-                  className={`px-5 py-2 rounded-full font-bold text-sm transition-all flex items-center gap-2 ${tableFilterTab === "ship" ? "bg-blue-500 text-white shadow-sm" : "bg-white text-gray-700 hover:bg-gray-50"}`}>
+                  className={`relative px-4 py-2 rounded-xl font-bold text-sm transition-all flex items-center gap-2 ${tableFilterTab === "ship" ? "bg-blue-500 text-white shadow-lg" : "bg-white text-gray-600 hover:bg-gray-100 border"}`}>
                   <Icon name="truck" className="w-4 h-4" /> Ship
+                  {orders.filter(o => o._kind === "ship" && o.status !== "completed" && o.status !== "paid").length > 0 && (
+                    <span className="absolute -top-2 -right-2 bg-red-500 text-white text-[10px] w-5 h-5 flex items-center justify-center rounded-full font-bold">
+                      {orders.filter(o => o._kind === "ship" && o.status !== "completed" && o.status !== "paid").length}
+                    </span>
+                  )}
                 </button>
                 {staffCalls.length > 0 && (
                   <button onClick={() => { const c = staffCalls[0]; resolveStaffCall(c.id); }}
