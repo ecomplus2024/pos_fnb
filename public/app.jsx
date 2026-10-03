@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "sound-bell-1";
+const APP_BUILD = "quick-order-1";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -1902,15 +1902,12 @@ function PosApp({ user, onLogout }) {
               {tableFilterTab === "tables" && (
               <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-2 md:gap-4">
                 <button onClick={() => {
-                    if (cart.length > 0) {
-                      setShowTablePicker(true);
-                    } else {
-                      setSelectedTable(null);
-                      setCart([]);
-                      setInitialCart([]);
-                      setCurrentOrderId(null);
-                      setView("menu");
-                    }
+                    // Giống POS cũ: luôn vào order nhanh, không mở popup chọn bàn
+                    setSelectedTable(null);
+                    setCart([]);
+                    setInitialCart([]);
+                    setCurrentOrderId(null);
+                    setView("menu");
                   }}
                   className="relative p-3 md:p-6 rounded-2xl md:rounded-[2rem] border-2 transition-all duration-300 group bg-gradient-to-br from-orange-50 to-amber-50 border-orange-200 hover:border-orange-400 hover:shadow-md text-center">
                   <div className="absolute top-4 right-4 w-3 h-3 rounded-full bg-orange-400"></div>
