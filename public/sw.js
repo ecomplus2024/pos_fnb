@@ -1,9 +1,9 @@
 // public/sw.js - PWA Service Worker cho POS
-const CACHE_NAME = 'pos-v5';
+const CACHE_NAME = 'pos-v6';
 
 // Precache list — chỉ static files không thay đổi (JS/CSS/HTML dùng network-first)
+// KHÔNG precache manifest.json — nó thay đổi (orientation, icon) mà PWA đọc lúc cài
 const PRECACHE_URLS = [
-  '/manifest.json',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
   // CDN resources
@@ -90,7 +90,7 @@ self.addEventListener('fetch', (event) => {
 
   // Static files (JS/JSX/CSS/HTML) — network-first (always fetch fresh, fallback to cache offline)
   // .jsx PHẢI ở đây — nếu rơi xuống cache-first bên dưới, app.jsx cũ sẽ sống mãi trong cache
-  if (url.pathname.endsWith('.js') || url.pathname.endsWith('.jsx') || url.pathname.endsWith('.css') || url.pathname.endsWith('.html') || url.pathname === '/') {
+  if (url.pathname.endsWith('.js') || url.pathname.endsWith('.jsx') || url.pathname.endsWith('.css') || url.pathname.endsWith('.html') || url.pathname.endsWith('.json') || url.pathname === '/') {
     event.respondWith(
       fetch(request).then(networkResponse => {
         if (networkResponse.ok) {
