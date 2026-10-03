@@ -77,11 +77,19 @@ async function collectOrders(db) {
 
 async function collectAttendance(db) {
   const { results } = await db.prepare(
-    `SELECT a.id AS local_id, COALESCE(u.full_name, u.username) AS user_name,
-            a.check_in_at, a.check_out_at
-     FROM attendance a LEFT JOIN users u ON u.id = a.user_id
+    `SELECT a.id AS local_id, e.name AS user_name,
+            a.check_in_at, a.check_out_at, a.note
+     FROM attendance a LEFT JOIN employees e ON e.id = a.user_id
      WHERE a.synced_at IS NULL
      ORDER BY a.id LIMIT ${PUSH_BATCH}`
+  ).all().catch(() => ({ results: [] }));
+  return results;
+}
+
+// Bản ghi đã xóa ở local cần xóa trên hub (tombstone)
+async function collectDeletes(db) {
+  const { results } = await db.prepare(
+    "SELECT id, entity, local_id FROM sync_deletes ORDER BY id LIMIT 500"
   ).all().catch(() => ({ results: [] }));
   return results;
 }
@@ -274,6 +282,7 @@ CREATE TABLE IF NOT EXISTS hub_attendance (
   user_name TEXT,
   check_in_at TEXT,
   check_out_at TEXT,
+  note TEXT,
   synced_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(store_id, local_id)
 );
@@ -308,6 +317,9 @@ async function ensureD1Schema(ctx) {
   } catch {}
   try {
     await d1Raw(ctx, "ALTER TABLE hub_payroll ADD COLUMN shifts_json TEXT;");
+  } catch {}
+  try {
+    await d1Raw(ctx, "ALTER TABLE hub_attendance ADD COLUMN note TEXT;");
   } catch {}
   ensuredD1 = ctx.db_id;
 }
@@ -401,12 +413,12 @@ function buildDataStatements(storeId, orders, attendance, payroll, employees) {
   }
   for (const a of attendance) {
     stmts.push(
-      `INSERT INTO hub_attendance (store_id, local_id, user_name, check_in_at, check_out_at, synced_at)
+      `INSERT INTO hub_attendance (store_id, local_id, user_name, check_in_at, check_out_at, note, synced_at)
        VALUES (${S}, ${Number(a.local_id) || 0}, ${sqlLit(a.user_name)},
-         ${sqlLit(a.check_in_at)}, ${sqlLit(a.check_out_at)}, datetime('now'))
+         ${sqlLit(a.check_in_at)}, ${sqlLit(a.check_out_at)}, ${sqlLit(a.note)}, datetime('now'))
        ON CONFLICT(store_id, local_id) DO UPDATE SET
          user_name=excluded.user_name, check_in_at=excluded.check_in_at,
-         check_out_at=excluded.check_out_at, synced_at=excluded.synced_at`
+         check_out_at=excluded.check_out_at, note=excluded.note, synced_at=excluded.synced_at`
     );
   }
   for (const p of payroll) {
@@ -459,7 +471,20 @@ async function collectEmployees(db) {
   return results;
 }
 
-async function pushD1(db, hub, orders, catalog, attendance, payroll, employees) {
+const DELETE_TABLE_MAP = {
+  attendance: "hub_attendance",
+  employees: "hub_employees",
+  payroll: "hub_payroll",
+};
+
+function buildDeleteStatements(storeId, deletes) {
+  const S = sqlLit(storeId);
+  return deletes
+    .filter((d) => DELETE_TABLE_MAP[d.entity])
+    .map((d) => `DELETE FROM ${DELETE_TABLE_MAP[d.entity]} WHERE store_id=${S} AND local_id=${Number(d.local_id) || 0}`);
+}
+
+async function pushD1(db, hub, orders, catalog, attendance, payroll, employees, deletes) {
   const storeId = String(hub.store_id || "").trim();
   if (!storeId) throw new Error("chưa nhập Mã quán (store_id)");
   const ctx = await resolveD1(db, hub);
@@ -468,6 +493,7 @@ async function pushD1(db, hub, orders, catalog, attendance, payroll, employees) 
   const stmts = [
     ...buildDataStatements(storeId, orders, attendance, payroll, employees),
     ...buildCatalogStatements(storeId, catalog),
+    ...buildDeleteStatements(storeId, deletes || []),
   ];
   await runRawChunked(ctx, stmts);
   return { db_name: ctx.db_name };
@@ -494,7 +520,7 @@ async function pushWorker(hub, orders, catalog, attendance, payroll, employees) 
   if (!res.ok) throw new Error(`hub ${res.status}: ${data.message || data.error || ""}`);
 }
 
-async function markSynced(db, orders, attendance, payroll, employees) {
+async function markSynced(db, orders, attendance, payroll, employees, deletes) {
   const now = new Date().toISOString();
   for (const o of orders) {
     await db.prepare("UPDATE orders SET synced_at = ? WHERE id = ?").bind(now, o.local_id).run();
@@ -507,6 +533,10 @@ async function markSynced(db, orders, attendance, payroll, employees) {
   }
   for (const e of employees || []) {
     await db.prepare("UPDATE employees SET synced_at = ? WHERE id = ?").bind(now, e.local_id).run();
+  }
+  // Tombstone đã đẩy lên hub xong → dọn
+  for (const d of deletes || []) {
+    await db.prepare("DELETE FROM sync_deletes WHERE id = ?").bind(d.id).run().catch(() => {});
   }
   return now;
 }
@@ -527,16 +557,17 @@ async function syncOnce(db) {
     const attendance = await collectAttendance(db);
     const payroll = await collectPayroll(db);
     const employees = await collectEmployees(db);
+    const deletes = await collectDeletes(db);
 
     let detail;
     if (mode === "d1") {
-      const { db_name } = await pushD1(db, hub, orders, catalog, attendance, payroll, employees);
-      detail = `đẩy ${orders.length} đơn + ${attendance.length} chấm công + ${payroll.length} phiếu lương + ${employees.length} nhân viên + catalog (${catalog.products.length} món) → D1 "${db_name}"`;
+      const { db_name } = await pushD1(db, hub, orders, catalog, attendance, payroll, employees, deletes);
+      detail = `đẩy ${orders.length} đơn + ${attendance.length} chấm công + ${payroll.length} phiếu lương + ${employees.length} nhân viên + ${deletes.length} xóa + catalog (${catalog.products.length} món) → D1 "${db_name}"`;
     } else {
       await pushWorker(hub, orders, catalog, attendance, payroll, employees);
       detail = `đẩy ${orders.length} đơn + ${attendance.length} chấm công + ${payroll.length} phiếu lương + ${employees.length} nhân viên + catalog (${catalog.products.length} món)`;
     }
-    const now = await markSynced(db, orders, attendance, payroll, employees);
+    const now = await markSynced(db, orders, attendance, payroll, employees, deletes);
     lastStatus = { ok: true, at: now, detail };
     await setSyncStatusSetting(db, lastStatus);
   } catch (err) {

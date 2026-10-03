@@ -2354,6 +2354,8 @@ async function handleAdminAttendanceMutate(env, attId, request) {
 
   if (request.method === "DELETE") {
     await env.DB.prepare("DELETE FROM attendance WHERE id = ?").bind(id).run();
+    // Tombstone để sync xóa trên hub (bảng chỉ có ở local SQLite)
+    await env.DB.prepare("INSERT INTO sync_deletes (entity, local_id) VALUES ('attendance', ?)").bind(id).run().catch(() => {});
     return json({ ok: true });
   }
 
@@ -2433,6 +2435,7 @@ async function handleAdminEmployeeMutate(env, empId, request) {
       await env.DB.prepare("UPDATE employees SET active = 0, synced_at = NULL WHERE id = ?").bind(id).run();
     } else {
       await env.DB.prepare("DELETE FROM employees WHERE id = ?").bind(id).run();
+      await env.DB.prepare("INSERT INTO sync_deletes (entity, local_id) VALUES ('employees', ?)").bind(id).run().catch(() => {});
     }
     return json({ ok: true });
   }
@@ -2487,6 +2490,7 @@ async function handleAdminPayrollCreate(env, body) {
 }
 async function handleAdminPayrollDelete(env, id) {
   await env.DB.prepare("DELETE FROM payroll WHERE id = ?").bind(Number(id)).run();
+  await env.DB.prepare("INSERT INTO sync_deletes (entity, local_id) VALUES ('payroll', ?)").bind(Number(id)).run().catch(() => {});
   return json({ ok: true });
 }
 

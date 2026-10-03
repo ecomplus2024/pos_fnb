@@ -168,6 +168,15 @@ async function migrate(db) {
     BEGIN
       UPDATE orders SET updated_at = datetime('now') WHERE id = NEW.id;
     END`);
+
+  // Tombstone cho sync: bản ghi bị xóa ở local → ghi vào đây,
+  // sync.mjs phát DELETE tương ứng lên hub rồi dọn.
+  db.exec(`CREATE TABLE IF NOT EXISTS sync_deletes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity TEXT NOT NULL,
+    local_id INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  )`);
 }
 
 /**
