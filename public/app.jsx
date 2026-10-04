@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "table-tabs-1";
+const APP_BUILD = "mobile-edit-2";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -2790,7 +2790,7 @@ function PosApp({ user, onLogout }) {
 
       {/* Topping Modal */}
       {showToppingModal && selectedCartItemForTopping !== null && (
-        <div className="fixed inset-0 z-[60] flex items-end">
+        <div className="fixed inset-0 z-[120] flex items-end">
           <div className="absolute inset-0 bg-black/60" onClick={() => { setShowToppingModal(false); setSelectedCartItemForTopping(null); }}></div>
           <div className="relative bg-white w-full max-h-[75vh] rounded-t-3xl overflow-hidden flex flex-col">
             <div className="p-4 border-b flex items-center justify-between bg-gray-50">
