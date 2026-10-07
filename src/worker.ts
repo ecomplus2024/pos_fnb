@@ -169,6 +169,21 @@ async function handleChanges(env, ctx, unit) {
   const key = `t:${maxOrderId}:${maxCallId}:${maxItemId}:${tableSig}`;
   return json({ key });
 }
+// Tên quán lấy từ settings (admin nhập ở Cấu hình) — fallback env khi chưa cài
+async function getStoreName(env) {
+  try {
+    const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'store_name'").first();
+    if (row && row.value) {
+      try {
+        const v = JSON.parse(row.value);
+        if (typeof v === "string" && v.trim()) return v;
+      } catch {
+        if (row.value.trim()) return row.value;
+      }
+    }
+  } catch {}
+  return env.STORE_NAME;
+}
 async function handleMenu(env) {
   const [categoriesResult, productsResult] = await Promise.all([
     env.DB.prepare("SELECT id, name, sort_order, production_unit, allow_all_toppings FROM categories ORDER BY sort_order, name").all(),
@@ -213,7 +228,7 @@ async function handleMenu(env) {
     ...p,
     sizes: sizesByProduct.get(p.id) || []
   }));
-  return json({ store_name: env.STORE_NAME, categories, products });
+  return json({ store_name: await getStoreName(env), categories, products });
 }
 async function handleTables(env) {
   const result = await env.DB.prepare(
@@ -889,7 +904,7 @@ async function handlePublicMenu(env, tableId) {
     sizes: sizesByProduct.get(p.id) || []
   }));
   return json({
-    store: { name: env.STORE_NAME },
+    store: { name: await getStoreName(env) },
     table: tableRow,
     categories,
     products
@@ -1495,7 +1510,7 @@ async function handleTakeawayMenu(env) {
     sizes: sizesByProduct.get(p.id) || []
   }));
   return json({
-    store: { name: env.STORE_NAME },
+    store: { name: await getStoreName(env) },
     categories,
     products
   });
@@ -1745,7 +1760,7 @@ async function handleShipMenu(env) {
     sizes: sizesByProduct.get(p.id) || []
   }));
   return json({
-    store: { name: env.STORE_NAME },
+    store: { name: await getStoreName(env) },
     categories,
     products
   });
@@ -3155,7 +3170,7 @@ var worker_default = {
       }
     }
     if (url.pathname === "/api/health") {
-      return json({ ok: true, store: env.STORE_NAME, time: (new Date()).toISOString() });
+      return json({ ok: true, store: await getStoreName(env), time: (new Date()).toISOString() });
     }
     if (url.pathname === "/api/menu" && request.method === "GET") {
       const auth = await requireAuth(env, request);
