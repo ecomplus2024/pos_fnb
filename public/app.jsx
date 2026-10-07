@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "mobile-edit-2";
+const APP_BUILD = "menu-autorefresh-1";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -966,6 +966,8 @@ function useSyncPolling() {
   const [counterOrders, setCounterOrders] = useState([]);
   const [kitchenCancelled, setKitchenCancelled] = useState({});
   const [counterCancelled, setCounterCancelled] = useState({});
+  // Tăng khi SSE báo mutation đụng catalog (sản phẩm/danh mục/topping) → PosApp reload menu
+  const [menuVersion, setMenuVersion] = useState(0);
 
   // Notification refs (PosApp reads these to play beep/toast)
   const staffCallsRef = useRef([]);
@@ -1043,7 +1045,18 @@ function useSyncPolling() {
     poll();
     const interval = setInterval(poll, 15000);
     const es = new EventSource("/api/events");
-    es.onmessage = () => poll();
+    es.onmessage = (e) => {
+      poll();
+      // Mutation vào catalog (thêm/sửa/xóa món, danh mục, ảnh, settings) → báo menu reload
+      try {
+        const d = JSON.parse(e.data || "{}");
+        const p = d.path || "";
+        if (p.startsWith("/api/admin/products") || p.startsWith("/api/admin/categories")
+          || p.startsWith("/api/admin/upload") || p.startsWith("/api/admin/settings")) {
+          setMenuVersion((v) => v + 1);
+        }
+      } catch {}
+    };
     return () => { cancelled = true; clearInterval(interval); es.close(); };
   }, []);
 
@@ -1069,7 +1082,7 @@ function useSyncPolling() {
   return {
     tables, setTables, orders, setOrders, staffCalls, setStaffCalls, serverOffsetMs,
     kitchenOrders, counterOrders, kitchenCancelled, counterCancelled,
-    refreshTables, refreshOrders,
+    refreshTables, refreshOrders, menuVersion,
     newStaffCallsRef, newKitchenAlertRef, newCounterAlertRef,
   };
 }
@@ -1086,7 +1099,7 @@ function PosApp({ user, onLogout }) {
   const isOnline = useOnlineStatus();
   const { pendingCount, addToQueue } = useOfflineQueue(isOnline);
   const { tables, setTables, orders, setOrders, staffCalls, setStaffCalls, serverOffsetMs,
-          refreshTables, refreshOrders, newStaffCallsRef, newKitchenAlertRef, newCounterAlertRef } = sync;
+          refreshTables, refreshOrders, menuVersion, newStaffCallsRef, newKitchenAlertRef, newCounterAlertRef } = sync;
 
   // Batch 3: URL sync — read initial tab from URL
   const initialTab = (() => {
@@ -1228,7 +1241,8 @@ function PosApp({ user, onLogout }) {
     };
     loadMenu();
     // Tables loaded by SyncProvider's initial poll — no need to fetch here
-  }, []);
+    // menuVersion: SSE báo khi admin thêm/sửa/xóa món → reload menu, không cần mở lại app
+  }, [menuVersion]);
 
   const showToast = (msg) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
