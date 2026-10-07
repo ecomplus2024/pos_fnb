@@ -10,7 +10,7 @@ const { useState, useEffect, useMemo, useRef, useCallback, createContext, useCon
 
 // Frontend build stamp — hiện ở Cài đặt → Hệ thống server để verify WebView
 // đang chạy code mới hay cache cũ. Đổi chuỗi này mỗi lần sửa frontend.
-const APP_BUILD = "menu-autorefresh-1";
+const APP_BUILD = "settings-save-1";
 
 // ============ Helpers ============
 const formatVND = (amount) => new Intl.NumberFormat("vi-VN").format(amount) + " đ";
@@ -7308,14 +7308,15 @@ function AdminPanel({ embedded = false, onExit }) {
   };
 
   // ---- Settings ----
-  const saveSettings = async (newSettings) => {
+  const saveSettings = async (newSettings, opts = {}) => {
     setSettings(newSettings);
     try {
       // Loại bỏ zalo_bot khỏi payload — zalo_bot được quản lý riêng qua saveZaloBot
       const { zalo_bot, ...safeSettings } = newSettings;
       await apiAuth("/api/settings", { method: "POST", body: JSON.stringify(safeSettings) });
+      if (opts.toast) showToast("Đã lưu cấu hình");
     } catch (err) {
-      showToast("Lỗi lưu cấu hình");
+      showToast(`Lỗi lưu cấu hình: ${err.message || err}`);
     }
   };
 
@@ -7674,7 +7675,8 @@ function AdminPanel({ embedded = false, onExit }) {
                   <input
                     type="text"
                     value={settings.store_name || ""}
-                    onChange={(e) => saveSettings({ ...settings, store_name: e.target.value })}
+                    onChange={(e) => setSettings({ ...settings, store_name: e.target.value })}
+                    onBlur={(e) => saveSettings({ ...settings, store_name: e.target.value }, { toast: true })}
                     className="w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-primary-500 outline-none font-bold text-gray-800"
                     placeholder="VD: Chè Huệ..."
                   />
@@ -7690,21 +7692,24 @@ function AdminPanel({ embedded = false, onExit }) {
                 <div className="space-y-2">
                   <label className="text-xs font-black text-gray-500 uppercase">Tên Wifi (SSID)</label>
                   <input type="text" value={settings.wifi_ssid || ""}
-                    onChange={(e) => saveSettings({ ...settings, wifi_ssid: e.target.value })}
+                    onChange={(e) => setSettings({ ...settings, wifi_ssid: e.target.value })}
+                    onBlur={(e) => saveSettings({ ...settings, wifi_ssid: e.target.value }, { toast: true })}
                     className="w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-primary-500 outline-none font-bold text-gray-800"
                     placeholder="Tên Wifi của quán" />
                 </div>
                 <div className="space-y-2">
                   <label className="text-xs font-black text-gray-500 uppercase">Mật khẩu Wifi</label>
                   <input type="text" value={settings.wifi_pass || ""}
-                    onChange={(e) => saveSettings({ ...settings, wifi_pass: e.target.value })}
+                    onChange={(e) => setSettings({ ...settings, wifi_pass: e.target.value })}
+                    onBlur={(e) => saveSettings({ ...settings, wifi_pass: e.target.value }, { toast: true })}
                     className="w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-primary-500 outline-none font-bold text-gray-800"
                     placeholder="Mật khẩu Wifi" />
                 </div>
                 <div className="space-y-2 col-span-2">
                   <label className="text-xs font-black text-gray-500 uppercase">Facebook Page URL</label>
                   <input type="text" value={settings.facebook_url || ""}
-                    onChange={(e) => saveSettings({ ...settings, facebook_url: e.target.value })}
+                    onChange={(e) => setSettings({ ...settings, facebook_url: e.target.value })}
+                    onBlur={(e) => saveSettings({ ...settings, facebook_url: e.target.value }, { toast: true })}
                     className="w-full px-4 py-3 border rounded-xl focus:ring-2 focus:ring-primary-500 outline-none font-bold text-gray-800"
                     placeholder="https://facebook.com/chehue..." />
                   <p className="text-xs text-gray-400 font-bold mt-1">Sẽ hiển thị trong màn hình trang chủ Wifi</p>
